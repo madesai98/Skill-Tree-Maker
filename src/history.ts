@@ -154,7 +154,7 @@ function diffValue(
     const newMap = new Map<string, { value: JsonRecord; index: number }>();
     oldValue.forEach((item, index) => oldMap.set(String((item as JsonRecord).id), { value: item as JsonRecord, index }));
     newValue.forEach((item, index) => newMap.set(String((item as JsonRecord).id), { value: item as JsonRecord, index }));
-    const ids = [...oldMap.keys(), ...newMap.keys().filter((id) => !oldMap.has(id))];
+    const ids = [...oldMap.keys(), ...[...newMap.keys()].filter((id) => !oldMap.has(id))];
 
     ids.forEach((id) => {
       const before = oldMap.get(id);
