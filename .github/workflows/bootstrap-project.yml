@@ -34,25 +34,18 @@ jobs:
           unzip -t project.zip
           unzip -o project.zip
 
-          # The GitHub Actions token cannot create/update workflow files.
-          # Keep this bootstrap workflow unchanged and deploy Pages from /docs instead.
-          rm -f .github/workflows/deploy-pages.yml
+          # Never let this workflow's GITHUB_TOKEN modify workflow files.
+          # The permanent Pages workflow is installed separately.
+          git checkout -- .github/workflows
+
           rm -f project.zip project.zip.b64 project.part.*
 
-      - name: Build static site into docs
-        run: |
-          npm install --no-audit --no-fund
-          npm run build
-          rm -rf docs
-          mv dist docs
-          touch docs/.nojekyll
-
-      - name: Commit restored source and built site
+      - name: Commit restored source
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git status --short
           git diff --cached --quiet && exit 0
-          git commit -m "Restore Skill Tree Maker and publish docs"
+          git commit -m "Restore Skill Tree Maker source"
           git push origin main
