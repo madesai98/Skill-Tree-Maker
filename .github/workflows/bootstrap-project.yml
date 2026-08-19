@@ -1,13 +1,6 @@
 name: Bootstrap project source
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'project.part.*'
-      - '.github/workflows/bootstrap-project.yml'
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -35,17 +28,31 @@ jobs:
           assert len(p3) == 7572 and p3[1608] == 'G'
           Path('project.part.03.fixed').write_text(p3[:1608] + 'H' + p3[1609:])
           PY
+
           cat project.part.00 project.part.01.fixed project.part.02 project.part.03.fixed | base64 --decode > project.zip
           echo 'b04a80b4584d503c9e8288c5c704c28648963e107b8b83d7dda83e3895da0004  project.zip' | sha256sum -c -
           unzip -t project.zip
           unzip -o project.zip
-          rm -f project.zip project.zip.b64 project.part.*
-          rm .github/workflows/bootstrap-project.yml
 
-      - name: Commit restored source
+          # The GitHub Actions token cannot create/update workflow files.
+          # Keep this bootstrap workflow unchanged and deploy Pages from /docs instead.
+          rm -f .github/workflows/deploy-pages.yml
+          rm -f project.zip project.zip.b64 project.part.*
+
+      - name: Build static site into docs
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          rm -rf docs
+          mv dist docs
+          touch docs/.nojekyll
+
+      - name: Commit restored source and built site
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Restore Skill Tree Maker source"
+          git status --short
+          git diff --cached --quiet && exit 0
+          git commit -m "Restore Skill Tree Maker and publish docs"
           git push origin main
