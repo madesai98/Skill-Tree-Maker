@@ -45,6 +45,7 @@ const PROJECT_STORAGE_KEY = 'incremental-td-skill-tree:v2';
 const LEGACY_HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v1';
 const HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v2';
 const HISTORY_LIMIT = 50;
+const COALESCE_WINDOW_MS = 600;
 export const HISTORY_APPLY_EVENT = 'skill-tree-history-apply';
 
 const nativeSetItem = Storage.prototype.setItem;
@@ -349,6 +350,26 @@ function historyId() {
   return `history-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function changeIdentity(change: AtomicHistoryChange) {
+  return change.key.join('\u0000');
+}
+
+function canCoalesce(previous: HistoryEntry, changes: AtomicHistoryChange[], now: number) {
+  if (now - previous.timestamp > COALESCE_WINDOW_MS || previous.changes.length !== changes.length) return false;
+  if (previous.changes.some((change) => !change.oldExists || !change.newExists)) return false;
+  if (changes.some((change) => !change.oldExists || !change.newExists)) return false;
+  return previous.changes.every((change, index) => changeIdentity(change) === changeIdentity(changes[index]));
+}
+
+function mergeChanges(previous: AtomicHistoryChange[], changes: AtomicHistoryChange[]) {
+  return previous.map((change, index) => ({
+    ...change,
+    newExists: changes[index].newExists,
+    newValue: cloneValue(changes[index].newValue),
+    ...(changes[index].newIndex === undefined ? {} : { newIndex: changes[index].newIndex }),
+  })).filter((change) => change.oldExists !== change.newExists || !sameValue(change.oldValue, change.newValue));
+}
+
 nativeRemoveItem.call(localStorage, LEGACY_HISTORY_STORAGE_KEY);
 let historyState = readHistory();
 let panelOpen = false;
@@ -370,11 +391,33 @@ function recordProject(rawProject: string) {
   lastProject = nextProject;
   if (changes.length === 0) return;
 
+  const now = Date.now();
+  const appliedEntries = historyState.entries.slice(0, historyState.cursor + 1);
+  const previous = appliedEntries.at(-1);
+
+  if (
+    previous
+    && historyState.cursor === historyState.entries.length - 1
+    && canCoalesce(previous, changes, now)
+  ) {
+    const merged = mergeChanges(previous.changes, changes);
+    const entries = merged.length === 0
+      ? appliedEntries.slice(0, -1)
+      : [
+          ...appliedEntries.slice(0, -1),
+          { ...previous, timestamp: now, label: describeEntry(merged), changes: merged },
+        ];
+    historyState = { entries, cursor: entries.length - 1 };
+    writeHistory(historyState);
+    renderPanel();
+    return;
+  }
+
   const entries = [
-    ...historyState.entries.slice(0, historyState.cursor + 1),
+    ...appliedEntries,
     {
       id: historyId(),
-      timestamp: Date.now(),
+      timestamp: now,
       label: describeEntry(changes),
       changes,
     },
@@ -383,6 +426,14 @@ function recordProject(rawProject: string) {
   historyState = { entries, cursor: entries.length - 1 };
   writeHistory(historyState);
   renderPanel();
+}
+
+export function recordHistoryProject(project: unknown) {
+  try {
+    recordProject(typeof project === 'string' ? project : JSON.stringify(project));
+  } catch {
+    // Ignore non-serializable transient editor state; persisted project data remains unaffected.
+  }
 }
 
 Storage.prototype.setItem = function patchedSetItem(key: string, value: string) {
