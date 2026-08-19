@@ -26,6 +26,12 @@ import {
   useRef,
   useState,
 } from 'react';
+import {
+  applyHistoryTransitionsToCollection,
+  HISTORY_APPLY_EVENT,
+  recordHistoryProject,
+} from './history';
+import type { HistoryApplyDetail } from './history';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
@@ -523,8 +529,49 @@ function SkillTreeEditor() {
   }, []);
 
   useEffect(() => {
+    const onHistoryApply = (event: Event) => {
+      const detail = (event as CustomEvent<HistoryApplyDetail>).detail;
+      if (!detail?.transitions.length) return;
+
+      const touched = new Set(detail.transitions.flatMap((transition) =>
+        transition.changes.map((change) => change.key[0]),
+      ));
+
+      if (touched.has('nodes')) {
+        setNodes((current) => applyHistoryTransitionsToCollection(current, 'nodes', detail.transitions));
+      }
+      if (touched.has('edges')) {
+        setEdges((current) => applyHistoryTransitionsToCollection(current, 'edges', detail.transitions));
+      }
+      if (touched.has('stats')) {
+        setStats((current) => applyHistoryTransitionsToCollection(current, 'stats', detail.transitions));
+      }
+      if (touched.has('currencies')) {
+        setCurrencies((current) => applyHistoryTransitionsToCollection(current, 'currencies', detail.transitions));
+      }
+
+      const removedNodeIds = new Set<string>();
+      detail.transitions.forEach((transition) => {
+        transition.changes.forEach((change) => {
+          if (change.key[0] !== 'nodes' || change.key.length !== 2) return;
+          const targetExists = transition.direction === 'undo' ? change.oldExists : change.newExists;
+          if (!targetExists) removedNodeIds.add(change.key[1]);
+        });
+      });
+      setSelectedNodeId((current) => current && removedNodeIds.has(current) ? null : current);
+      setConnectionChoice('');
+      setGesture(null);
+    };
+
+    window.addEventListener(HISTORY_APPLY_EVENT, onHistoryApply);
+    return () => window.removeEventListener(HISTORY_APPLY_EVENT, onHistoryApply);
+  }, [setEdges, setNodes]);
+
+  useEffect(() => {
+    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };
+    recordHistoryProject(project);
+
     const timer = window.setTimeout(() => {
-      const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
       setSavedAt(`Saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     }, 180);
