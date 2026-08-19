@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - project.zip.b64
-      - .github/workflows/bootstrap-project.yml
+      - 'project.part.*'
+      - '.github/workflows/bootstrap-project.yml'
   workflow_dispatch:
 
 permissions:
@@ -20,9 +20,22 @@ jobs:
 
       - name: Restore uploaded project
         run: |
-          base64 --decode project.zip.b64 > project.zip
+          python - <<'PY'
+          from pathlib import Path
+
+          p1 = Path('project.part.01').read_text()
+          assert len(p1) == 8001 and p1[3788] == 'i'
+          Path('project.part.01.fixed').write_text(p1[:3788] + p1[3789:])
+
+          p3 = Path('project.part.03').read_text()
+          assert len(p3) == 7572 and p3[1608] == 'G'
+          Path('project.part.03.fixed').write_text(p3[:1608] + 'H' + p3[1609:])
+          PY
+          cat project.part.00 project.part.01.fixed project.part.02 project.part.03.fixed | base64 --decode > project.zip
+          echo 'b04a80b4584d503c9e8288c5c704c28648963e107b8b83d7dda83e3895da0004  project.zip' | sha256sum -c -
+          unzip -t project.zip
           unzip -o project.zip
-          rm project.zip project.zip.b64
+          rm -f project.zip project.zip.b64 project.part.*
           rm .github/workflows/bootstrap-project.yml
 
       - name: Commit restored source
