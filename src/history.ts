@@ -46,6 +46,7 @@ const LEGACY_HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v1';
 const HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v2';
 const HISTORY_LIMIT = 50;
 const COALESCE_WINDOW_MS = 600;
+const DRAG_FLUSH_DELAY_MS = 50;
 export const HISTORY_APPLY_EVENT = 'skill-tree-history-apply';
 
 const nativeSetItem = Storage.prototype.setItem;
@@ -373,6 +374,9 @@ function mergeChanges(previous: AtomicHistoryChange[], changes: AtomicHistoryCha
 nativeRemoveItem.call(localStorage, LEGACY_HISTORY_STORAGE_KEY);
 let historyState = readHistory();
 let panelOpen = false;
+let nodeDragActive = false;
+let pendingDragProject: CanonicalProject | null = null;
+let dragFlushTimer: number | null = null;
 let lastProject = (() => {
   const raw = localStorage.getItem(PROJECT_STORAGE_KEY);
   return raw ? normalizeProject(raw) : null;
@@ -387,6 +391,12 @@ function recordProject(rawProject: string) {
     return;
   }
 
+  if (nodeDragActive) {
+    pendingDragProject = nextProject;
+    return;
+  }
+
+  pendingDragProject = null;
   const changes = diffProjects(lastProject, nextProject);
   lastProject = nextProject;
   if (changes.length === 0) return;
@@ -436,6 +446,40 @@ export function recordHistoryProject(project: unknown) {
   }
 }
 
+function isNodeDragPointerDown(event: PointerEvent) {
+  if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey) return false;
+  const target = event.target;
+  return target instanceof Element
+    && Boolean(target.closest('.react-flow__node, .react-flow__nodesselection-rect'));
+}
+
+function flushPendingDragProject() {
+  dragFlushTimer = null;
+  if (nodeDragActive || !pendingDragProject) return;
+  const project = pendingDragProject;
+  pendingDragProject = null;
+  recordProject(JSON.stringify(project));
+}
+
+function finishNodeDrag() {
+  if (!nodeDragActive) return;
+  nodeDragActive = false;
+  if (dragFlushTimer !== null) window.clearTimeout(dragFlushTimer);
+  dragFlushTimer = window.setTimeout(flushPendingDragProject, DRAG_FLUSH_DELAY_MS);
+}
+
+window.addEventListener('pointerdown', (event) => {
+  if (!isNodeDragPointerDown(event)) return;
+  nodeDragActive = true;
+  pendingDragProject = null;
+  if (dragFlushTimer !== null) {
+    window.clearTimeout(dragFlushTimer);
+    dragFlushTimer = null;
+  }
+}, true);
+window.addEventListener('pointerup', finishNodeDrag, true);
+window.addEventListener('pointercancel', finishNodeDrag, true);
+
 Storage.prototype.setItem = function patchedSetItem(key: string, value: string) {
   nativeSetItem.call(this, key, value);
   if (this === localStorage && key === PROJECT_STORAGE_KEY) recordProject(value);
@@ -475,10 +519,12 @@ function restoreCursor(targetCursor: number) {
 }
 
 function undo() {
+  flushPendingDragProject();
   restoreCursor(historyState.cursor - 1);
 }
 
 function redo() {
+  flushPendingDragProject();
   restoreCursor(historyState.cursor + 1);
 }
 
