@@ -1,0 +1,34 @@
+name: Bootstrap project source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - project.zip.b64
+      - .github/workflows/bootstrap-project.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore uploaded project
+        run: |
+          base64 --decode project.zip.b64 > project.zip
+          unzip -o project.zip
+          rm project.zip project.zip.b64
+          rm .github/workflows/bootstrap-project.yml
+
+      - name: Commit restored source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Restore Skill Tree Maker source"
+          git push origin main
