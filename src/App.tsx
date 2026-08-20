@@ -33,12 +33,13 @@ import {
 } from './history';
 import type { HistoryApplyDetail } from './history';
 import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
+import { IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
 type BooleanOperator = 'set';
 type UpgradeOperator = NumberOperator | BooleanOperator;
-type EditorView = 'tree' | 'stats' | 'currencies';
+type EditorView = 'tree' | 'stats' | 'currencies' | 'icons';
 
 type Point = { x: number; y: number };
 
@@ -47,16 +48,21 @@ type StatDefinition = {
   key: string;
   name: string;
   type: StatType;
+  iconId: string | null;
   groupId: string;
   groupName: string;
   groupKey: string;
+  groupIconId: string | null;
+  groupColor: string;
 };
 
 type CurrencyDefinition = {
   id: string;
   key: string;
   name: string;
-  symbol: string;
+  iconId: string | null;
+  color: string;
+  symbol?: string;
 };
 
 type UpgradeEffect = {
@@ -92,6 +98,7 @@ type PersistedProject = {
   edges: SkillLinkEdge[];
   stats: StatDefinition[];
   currencies: CurrencyDefinition[];
+  icons: IconAsset[];
 };
 
 type GestureKind = 'link' | 'createBlank' | 'createUpgrade';
@@ -123,14 +130,14 @@ const NODE_SIZE = 62;
 const NODE_RADIUS = 29;
 
 const starterStats: StatDefinition[] = [
-  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },
-  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },
-  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },
+  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
 ];
 
 const starterCurrencies: CurrencyDefinition[] = [
-  { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇' },
-  { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡' },
+  { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇', iconId: null, color: '#b6ff56' },
+  { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡', iconId: null, color: '#7dc7ff' },
 ];
 
 const starterNodes: SkillFlowNode[] = [
@@ -185,6 +192,10 @@ const starterEdges: SkillLinkEdge[] = [
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeColor(value: unknown, fallback = '#b6ff56') {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }
 
 function statGameKeyFromDisplayName(name: string) {
@@ -244,6 +255,7 @@ function defaultProject(): PersistedProject {
     edges: starterEdges,
     stats: starterStats,
     currencies: starterCurrencies,
+    icons: [],
   };
 }
 
@@ -323,9 +335,12 @@ function normalizeStats(raw: unknown): StatDefinition[] {
       key: composeStatKey(groupKey, localKey),
       name: typeof value.name === 'string' ? value.name : `Stat ${index + 1}`,
       type,
+      iconId: typeof value.iconId === 'string' ? value.iconId : null,
       groupId,
       groupName,
       groupKey,
+      groupIconId: typeof value.groupIconId === 'string' ? value.groupIconId : null,
+      groupColor: normalizeColor(value.groupColor),
     }];
   });
 }
@@ -339,7 +354,24 @@ function normalizeCurrencies(raw: unknown): CurrencyDefinition[] {
       id: typeof value.id === 'string' ? value.id : `currency-import-${index}`,
       key: typeof value.key === 'string' ? value.key : `currency.${index + 1}`,
       name: typeof value.name === 'string' ? value.name : `Currency ${index + 1}`,
-      symbol: typeof value.symbol === 'string' ? value.symbol : '◇',
+      iconId: typeof value.iconId === 'string' ? value.iconId : null,
+      color: normalizeColor(value.color),
+      ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),
+    }];
+  });
+}
+
+function normalizeIcons(raw: unknown): IconAsset[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item, index) => {
+    if (!item || typeof item !== 'object') return [];
+    const value = item as Record<string, unknown>;
+    const svg = typeof value.svg === 'string' ? sanitizeSvgMarkup(value.svg) : null;
+    if (!svg) return [];
+    return [{
+      id: typeof value.id === 'string' && value.id ? value.id : `icon-import-${index}`,
+      name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : `Icon ${index + 1}`,
+      svg,
     }];
   });
 }
@@ -349,10 +381,19 @@ function migrateProject(raw: unknown): PersistedProject | null {
   const value = raw as Record<string, unknown>;
   if (!Array.isArray(value.nodes) || !Array.isArray(value.edges) || !Array.isArray(value.stats)) return null;
 
-  const stats = normalizeStats(value.stats);
-  const currencies = value.version === 2 && Array.isArray(value.currencies)
+  const icons = normalizeIcons(value.icons);
+  const iconIds = new Set(icons.map((icon) => icon.id));
+  const stats = normalizeStats(value.stats).map((stat) => ({
+    ...stat,
+    iconId: stat.iconId && iconIds.has(stat.iconId) ? stat.iconId : null,
+    groupIconId: stat.groupIconId && iconIds.has(stat.groupIconId) ? stat.groupIconId : null,
+  }));
+  const currencies = (value.version === 2 && Array.isArray(value.currencies)
     ? normalizeCurrencies(value.currencies)
-    : starterCurrencies;
+    : starterCurrencies).map((currency) => ({
+      ...currency,
+      iconId: currency.iconId && iconIds.has(currency.iconId) ? currency.iconId : null,
+    }));
   const fallbackCurrencyId = currencies[0]?.id ?? '';
   const currencyIds = new Set(currencies.map((currency) => currency.id));
   const statMap = new Map(stats.map((stat) => [stat.id, stat]));
@@ -430,6 +471,7 @@ function migrateProject(raw: unknown): PersistedProject | null {
     edges: sanitizeEdges(value.edges, nodes),
     stats,
     currencies,
+    icons,
   };
 }
 
@@ -560,7 +602,7 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 const nodeTypes = { skill: SkillNode };
 const edgeTypes = { skillLink: SkillLinkEdgeComponent };
 
-function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'nodeName' | 'nodeStats' }) {
+function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
   const paths: Record<string, ReactElement> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />,
@@ -569,6 +611,7 @@ function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree
     tree: <path d="M12 4v5m0 0-5 4m5-4 5 4M7 13v5m10-5v5M4 18h6m4 0h6" />,
     stats: <path d="M5 19V9m7 10V5m7 14v-7" />,
     currency: <><path d="M12 3 20 8l-8 13L4 8l8-5Z" /><path d="M4 8h16" /></>,
+    icons: <><path d="m12 3 7 4-7 4-7-4 7-4Z" /><path d="m5 12 7 4 7-4M5 17l7 4 7-4" /></>,
     close: <path d="m6 6 12 12M18 6 6 18" />,
     link: <path d="M9 15l6-6m-8.5 8.5-1 1a3.54 3.54 0 0 1-5-5l3-3a3.54 3.54 0 0 1 5 0m7-1a3.54 3.54 0 0 1 5 5l-3 3a3.54 3.54 0 0 1-5 0" />,
     nodeName: <><path d="M5 6h14M12 6v12M8.5 18h7" /><path d="M7 9V6m10 3V6" /></>,
@@ -591,6 +634,7 @@ function SkillTreeEditor() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<SkillLinkEdge>(initial.edges);
   const [stats, setStats] = useState<StatDefinition[]>(initial.stats);
   const [currencies, setCurrencies] = useState<CurrencyDefinition[]>(initial.currencies);
+  const [icons, setIcons] = useState<IconAsset[]>(initial.icons);
   const [activeView, setActiveView] = useState<EditorView>('tree');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initial.nodes[0]?.id ?? null);
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<SkillFlowNode, SkillLinkEdge> | null>(null);
@@ -610,14 +654,14 @@ function SkillTreeEditor() {
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const statGroups = useMemo(() => {
-    const groups = new Map<string, { id: string; name: string; key: string; stats: StatDefinition[] }>();
+    const groups = new Map<string, { id: string; name: string; key: string; iconId: string | null; color: string; stats: StatDefinition[] }>();
     stats.forEach((stat) => {
       const existing = groups.get(stat.groupId);
       if (existing) {
         existing.stats.push(stat);
         return;
       }
-      groups.set(stat.groupId, { id: stat.groupId, name: stat.groupName, key: stat.groupKey, stats: [stat] });
+      groups.set(stat.groupId, { id: stat.groupId, name: stat.groupName, key: stat.groupKey, iconId: stat.groupIconId, color: stat.groupColor, stats: [stat] });
     });
     return [...groups.values()];
   }, [stats]);
@@ -662,6 +706,9 @@ function SkillTreeEditor() {
       if (touched.has('currencies')) {
         setCurrencies((current) => applyHistoryTransitionsToCollection(current, 'currencies', detail.transitions));
       }
+      if (touched.has('icons')) {
+        setIcons((current) => applyHistoryTransitionsToCollection(current, 'icons', detail.transitions));
+      }
 
       const removedNodeIds = new Set<string>();
       detail.transitions.forEach((transition) => {
@@ -681,7 +728,7 @@ function SkillTreeEditor() {
   }, [setEdges, setNodes]);
 
   useEffect(() => {
-    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };
+    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };
     recordHistoryProject(project);
 
     const timer = window.setTimeout(() => {
@@ -689,7 +736,7 @@ function SkillTreeEditor() {
       setSavedAt(`Saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [nodes, edges, stats, currencies]);
+  }, [nodes, edges, stats, currencies, icons]);
 
   const addDirectedEdge = useCallback((source: string, target: string) => {
     const issue = edgeIssue(source, target, edges);
