@@ -48,7 +48,7 @@ const localStore = new LocalProjectStore();
 const cloudStore = new FirestoreProjectStore();
 const userId = getOrCreateUserId();
 let settings = readSettings();
-let mode: StorageMode = 'local';
+let mode: StorageMode = settings.mode;
 let localProjects: ProjectMeta[] = localStore.listProjects();
 let cloudProjects: ProjectMeta[] = [];
 let activeProjectId = '';
@@ -61,7 +61,9 @@ let pendingCloudTarget: CanonicalProject | null = null;
 let pendingRemoteCloud: CloudProjectDocument | null = null;
 let cloudWriteIdleResolvers: Array<() => void> = [];
 let projectPanelOpen = false;
-let connectionStatus = 'Local';
+let connectionStatus = settings.mode === 'online'
+  ? (settings.firebaseConfig ? 'Connecting…' : 'Not connected')
+  : 'Local';
 let uiInstalled = false;
 
 function getOrCreateUserId() {
@@ -298,6 +300,16 @@ async function createCloudProject(source?: CanonicalProject, name?: string) {
   await switchOnlineProject(created.id);
 }
 
+async function ensureOnlineProject(source: CanonicalProject = readWorkingProject()) {
+  if (!cloudStore.connected) throw new Error('Configure Firebase first.');
+  const selected = selectedCloudMeta();
+  if (selected) {
+    await switchOnlineProject(selected.id);
+    return;
+  }
+  await createCloudProject(source, selectedLocalMeta()?.name);
+}
+
 async function deleteCloudProject(id: string) {
   if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before managing projects.');
   const meta = cloudProjects.find((item) => item.id === id);
@@ -498,17 +510,9 @@ function installProjectUi() {
           writeSettings();
           renderProjectUi();
         } else {
-          const selected = selectedCloudMeta();
-          if (selected) await switchOnlineProject(selected.id);
-          else {
-            stopCloudSubscription();
-            mode = 'online';
-            activeProjectId = '';
-            connectionStatus = 'Cloud ready';
-            settings = { ...settings, mode: 'online' };
-            writeSettings();
-            renderProjectUi();
-          }
+          settings = { ...settings, mode: 'online' };
+          writeSettings();
+          await ensureOnlineProject(readWorkingProject());
         }
         return;
       }
@@ -539,16 +543,11 @@ function installProjectUi() {
         const textarea = control.querySelector<HTMLTextAreaElement>('.project-manager-config textarea');
         if (!textarea) return;
         const config = parseFirebaseConfigInput(textarea.value);
-        await configureFirebase(config);
         mode = 'online';
         settings = { ...settings, mode: 'online' };
         writeSettings();
-        const selected = selectedCloudMeta();
-        if (selected) await switchOnlineProject(selected.id);
-        else {
-          activeProjectId = '';
-          renderProjectUi();
-        }
+        await configureFirebase(config);
+        await ensureOnlineProject(readWorkingProject());
       } else if (action === 'configure') {
         if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before changing Firebase.');
         stopCloudSubscription();
@@ -557,6 +556,8 @@ function installProjectUi() {
         mode = 'online';
         activeProjectId = '';
         connectionStatus = 'Not connected';
+        settings = { ...settings, mode: 'online', selectedOnlineProjectId: null, firebaseConfig: null };
+        writeSettings();
         renderProjectUi();
       }
     } catch (error) {
@@ -573,6 +574,7 @@ function installProjectUi() {
 }
 
 async function initializeRuntime() {
+  const preferredMode = settings.mode;
   const migrated = localStore.ensureMigration();
   refreshLocalProjects();
   const local = localProjects.find((item) => item.id === settings.selectedLocalProjectId) ?? migrated ?? localProjects[0];
@@ -587,18 +589,29 @@ async function initializeRuntime() {
   refreshLocalProjects();
   await applyWorkingProject(localProject, `local:${local.id}`, null);
 
+  if (preferredMode === 'online') {
+    mode = 'online';
+    activeProjectId = '';
+    connectionStatus = settings.firebaseConfig ? 'Connecting…' : 'Not connected';
+    renderProjectUi();
+  }
+
   if (settings.firebaseConfig) {
     try {
       await configureFirebase(settings.firebaseConfig);
-      if (settings.mode === 'online') {
-        const selected = selectedCloudMeta();
-        if (selected) await switchOnlineProject(selected.id);
-      }
+      if (preferredMode === 'online') await ensureOnlineProject(localProject);
     } catch {
-      connectionStatus = 'Firebase unavailable';
-      mode = 'local';
-      activeProjectId = local.id;
-      await applyWorkingProject(localProject, `local:${local.id}`, null);
+      await cloudStore.disconnect();
+      cloudProjects = [];
+      if (preferredMode === 'online') {
+        mode = 'online';
+        activeProjectId = '';
+        connectionStatus = 'Firebase unavailable';
+      } else {
+        mode = 'local';
+        activeProjectId = local.id;
+        connectionStatus = 'Local';
+      }
     }
   }
   renderProjectUi();
