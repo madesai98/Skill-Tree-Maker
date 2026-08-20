@@ -33,7 +33,7 @@ import {
 } from './history';
 import type { HistoryApplyDetail } from './history';
 import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
-import { IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';
+import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
@@ -1281,6 +1281,14 @@ function SkillTreeEditor() {
     return id;
   };
 
+  const addIconifyAsset = async (iconName: string, svg: string) => {
+    if (icons.some((icon) => icon.name === iconName)) return;
+    setIcons((current) => current.some((icon) => icon.name === iconName)
+      ? current
+      : [...current, { id: uid('icon'), name: iconName, svg }]);
+    showNotice(`${iconName} added from Iconify.`);
+  };
+
   const replaceIconAsset = async (iconId: string, file: File) => {
     const svg = await parseIconFile(file);
     if (!svg) return;
@@ -1874,8 +1882,10 @@ function SkillTreeEditor() {
             </label>
           </div>
 
+          <IconifySearch icons={icons} onImport={addIconifyAsset} />
+
           {icons.length === 0 ? (
-            <div className="icon-pool-empty"><h3>No SVG icons yet</h3><p>Add an SVG here or upload one directly from a stat group, stat item, or currency.</p></div>
+            <div className="icon-pool-empty"><h3>No saved SVG icons yet</h3><p>Search Iconify above, add an SVG here, or upload one directly from a stat group, stat item, or currency.</p></div>
           ) : (
             <div className="icon-pool-grid">
               {icons.map((icon) => {
