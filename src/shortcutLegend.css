@@ -1,0 +1,82 @@
+.shortcut-legend {
+  position: absolute;
+  z-index: 12;
+  left: 18px;
+  bottom: 58px;
+  width: max-content;
+  max-width: min(320px, calc(100% - 36px));
+  border: 1px solid rgba(255,255,255,.065);
+  border-radius: 10px;
+  background: rgba(10,13,18,.84);
+  color: #727b89;
+  font-size: 10px;
+  line-height: 1.35;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.16);
+  overflow: hidden;
+}
+
+.shortcut-legend summary {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: #8e97a5;
+  font-weight: 750;
+  letter-spacing: .02em;
+}
+
+.shortcut-legend summary::-webkit-details-marker { display: none; }
+.shortcut-legend summary::before {
+  content: '›';
+  display: inline-block;
+  color: #697280;
+  font-size: 14px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform .14s ease;
+}
+.shortcut-legend[open] summary::before { transform: rotate(90deg); }
+.shortcut-legend summary:hover { background: rgba(255,255,255,.035); color: #b3bbc6; }
+
+.shortcut-list {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgba(255,255,255,.05);
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.shortcut-row kbd {
+  min-width: 86px;
+  color: #aab2bd;
+  font: 700 9px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.shortcut-row span { color: #687180; }
+
+@media (max-width: 720px) {
+  .shortcut-legend {
+    left: 13px;
+    bottom: 54px;
+    max-width: min(300px, calc(100% - 26px));
+  }
+
+  .shortcut-row {
+    gap: 8px;
+    white-space: normal;
+  }
+
+  .shortcut-row kbd { min-width: 80px; }
+}

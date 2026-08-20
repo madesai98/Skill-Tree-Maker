@@ -1112,8 +1112,27 @@ function SkillTreeEditor() {
           <div className={`flow-panel${gesture ? ' is-gesturing' : ''}`} ref={flowWrapRef}>
             <div className="canvas-toolbar">
               <button className="primary-button" onClick={() => createNodeAt()}><Icon name="plus" /> Add skill</button>
-              <span className="canvas-hint"><b>Alt drag</b> link · <b>Ctrl L/R drag</b> blank/upgrade · <b>MMB</b> duplicate · <b>Ctrl+C/V</b> paste · <b>Ctrl+Shift+V</b> island · <b>RMB drag</b> pan</span>
             </div>
+
+            <details className="shortcut-legend" open>
+              <summary>Shortcuts</summary>
+              <div className="shortcut-list">
+                <div className="shortcut-row"><kbd>LMB drag node</kbd><span>Move node</span></div>
+                <div className="shortcut-row"><kbd>Shift + LMB</kbd><span>Multi-select</span></div>
+                <div className="shortcut-row"><kbd>Alt + LMB drag</kbd><span>Link prerequisite</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + LMB drag</kbd><span>Create blank child</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + RMB drag</kbd><span>Create upgrade child</span></div>
+                <div className="shortcut-row"><kbd>MMB</kbd><span>Duplicate node</span></div>
+                <div className="shortcut-row"><kbd>RMB drag</kbd><span>Pan canvas</span></div>
+                <div className="shortcut-row"><kbd>Scroll wheel</kbd><span>Zoom canvas</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + C</kbd><span>Copy selected nodes</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + V</kbd><span>Paste with root parents</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + Shift + V</kbd><span>Paste as island</span></div>
+                <div className="shortcut-row"><kbd>Delete / Backspace</kbd><span>Delete selection</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + Z</kbd><span>Undo</span></div>
+                <div className="shortcut-row"><kbd>Ctrl + Shift + Z</kbd><span>Redo</span></div>
+              </div>
+            </details>
 
             {notice && <div className="canvas-notice">{notice}</div>}
 
