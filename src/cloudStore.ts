@@ -190,14 +190,16 @@ function entityKeyForChange(change: AtomicHistoryChange) {
         ? 'stat'
         : collection === 'currencies'
           ? 'currency'
-          : null;
+          : collection === 'icons'
+            ? 'icon'
+            : null;
   return singular ? `${singular}:${id}` : null;
 }
 
 function collectionWasCleared(
   base: CanonicalProject,
   requested: CanonicalProject,
-  collectionName: 'nodes' | 'edges' | 'stats' | 'currencies',
+  collectionName: 'nodes' | 'edges' | 'stats' | 'currencies' | 'icons',
 ) {
   return base[collectionName].length > 0 && requested[collectionName].length === 0;
 }
@@ -212,7 +214,7 @@ function applyOverwriteIntents(
   for (const change of changes) next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
   const project = cloneValue(next as CanonicalProject);
 
-  const collections = ['nodes', 'edges', 'stats', 'currencies'] as const;
+  const collections = ['nodes', 'edges', 'stats', 'currencies', 'icons'] as const;
   for (const collectionName of collections) {
     if (collectionWasCleared(base, requested, collectionName)) project[collectionName] = [];
   }
