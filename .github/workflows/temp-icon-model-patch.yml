@@ -1,0 +1,43 @@
+name: Temporary icon model patch
+on:
+  push:
+    branches: [feat/reusable-svg-icon-pool]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/reusable-svg-icon-pool
+          fetch-depth: 0
+      - name: Patch canonical icon collection
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/projectData.ts'); t=p.read_text()
+          def r(old,new):
+            global t
+            c=t.count(old)
+            if c != 1: raise SystemExit(f'match {c}: {old[:100]!r}')
+            t=t.replace(old,new,1)
+          r("  currencies: JsonRecord[];\n};", "  currencies: JsonRecord[];\n  icons: JsonRecord[];\n};")
+          r("      currencies: Array.isArray(parsed.currencies)\n        ? parsed.currencies.filter(isRecord).map((item) => cloneValue(item))\n        : [],\n    };", "      currencies: Array.isArray(parsed.currencies)\n        ? parsed.currencies.filter(isRecord).map((item) => cloneValue(item))\n        : [],\n      icons: Array.isArray(parsed.icons)\n        ? parsed.icons.filter(isRecord).map((item) => cloneValue(item))\n        : [],\n    };")
+          r("    currencies: [\n      { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇' },\n      { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡' },\n    ],\n  };", "    currencies: [\n      { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇', iconId: null, color: '#b6ff56' },\n      { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡', iconId: null, color: '#7dc7ff' },\n    ],\n    icons: [],\n  };")
+          r("    stats: cloneValue(basis.stats),\n    currencies: cloneValue(basis.currencies),\n  };", "    stats: cloneValue(basis.stats),\n    currencies: cloneValue(basis.currencies),\n    icons: cloneValue(basis.icons),\n  };")
+          r("  diffValue(before.currencies, after.currencies, ['currencies'], changes);\n  return changes;", "  diffValue(before.currencies, after.currencies, ['currencies'], changes);\n  diffValue(before.icons, after.icons, ['icons'], changes);\n  return changes;")
+          r("  collection: 'nodes' | 'edges' | 'stats' | 'currencies',", "  collection: 'nodes' | 'edges' | 'stats' | 'currencies' | 'icons',")
+          r("        : collection === 'currencies'\n          ? 'currency'\n          : collection;", "        : collection === 'currencies'\n          ? 'currency'\n          : collection === 'icons'\n            ? 'icon'\n            : collection;")
+          r("    if (['nodes', 'edges', 'stats', 'currencies'].includes(collection)) touched.add(entityKey(collection, id));", "    if (['nodes', 'edges', 'stats', 'currencies', 'icons'].includes(collection)) touched.add(entityKey(collection, id));")
+          p.write_text(t)
+          PY
+      - name: Commit model patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/projectData.ts
+          git commit -m "Add icon assets to project model"
+          git push origin HEAD:feat/reusable-svg-icon-pool
