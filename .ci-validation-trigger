@@ -1,3 +1,4 @@
 Validate merged online-compatible main branch.
 Run production smoke test and Pages deployment validation.
 Retry after smoke-test harness fix.
+Retry Pages deploy without environment gate.
