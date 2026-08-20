@@ -1,72 +1,39 @@
 import {
-  deleteApp,
-  getApp,
-  getApps,
-  initializeApp,
-  type FirebaseApp,
+  FirestoreProjectStore,
+  newerCloudDocument,
+  type CloudCommitResult,
+  type CloudProjectDocument,
   type FirebaseOptions,
-} from 'firebase/app';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  onSnapshot,
-  query,
-  runTransaction,
-  setDoc,
-  type Firestore,
-  type Unsubscribe,
-} from 'firebase/firestore';
+  type ProjectMeta,
+} from './cloudStore';
+import { rebaseQueuedProject } from './collaboration';
 import {
   HISTORY_APPLY_EVENT,
+  flushHistoryWrites,
   PROJECT_SAVED_EVENT,
   recordCommittedHistory,
   setHistoryExternalRecording,
   setHistoryScope,
   type HistoryEntry,
-  type HistoryState,
   type OnlineHistoryController,
 } from './history';
+import { LocalProjectStore, readWorkingProject } from './localProjectStore';
 import {
-  applyAtKey,
   cloneValue,
   createBlankProject,
-  createStarterProject,
   diffProjects,
-  guardEntityKeys,
   normalizeProject,
-  readAtKey,
   sameValue,
-  sideForDirection,
-  touchedEntityKeys,
-  validateProjectGraph,
-  valueMatchesSide,
-  type AtomicHistoryChange,
   type CanonicalProject,
   type HistoryDirection,
 } from './projectData';
+import './projectRuntime.css';
 
 const WORKING_PROJECT_KEY = 'incremental-td-skill-tree:v2';
 const USER_ID_KEY = 'skill-tree:user-id';
 const SETTINGS_KEY = 'skill-tree:project-settings:v1';
-const LOCAL_INDEX_KEY = 'skill-tree:local-projects:v1';
-const LOCAL_PROJECT_PREFIX = 'skill-tree:local-project:v1:';
-const LEGACY_HISTORY_V2_KEY = 'incremental-td-skill-tree:history:v2';
-const HISTORY_V3_PREFIX = 'incremental-td-skill-tree:history:v3:';
-const CLOUD_COLLECTION = 'skillTreeMakerProjects';
-const FIREBASE_APP_NAME = 'skill-tree-maker-online';
 
 type StorageMode = 'local' | 'online';
-
-type ProjectMeta = {
-  id: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-};
 
 type RuntimeSettings = {
   mode: StorageMode;
@@ -75,39 +42,25 @@ type RuntimeSettings = {
   firebaseConfig: FirebaseOptions | null;
 };
 
-type CloudProjectDocument = {
-  name: string;
-  createdAt: number;
-  updatedAt: number;
-  revision: number;
-  project: CanonicalProject;
-  fieldWriters: Record<string, string>;
-  entityWriters: Record<string, string>;
-};
-
+const localStore = new LocalProjectStore();
+const cloudStore = new FirestoreProjectStore();
 const userId = getOrCreateUserId();
 let settings = readSettings();
 let mode: StorageMode = 'local';
-let localProjects = readLocalIndex();
-let activeProjectId = '';
-let activeProject: CanonicalProject = readWorkingProject();
-let firebaseApp: FirebaseApp | null = null;
-let firestore: Firestore | null = null;
+let localProjects: ProjectMeta[] = localStore.listProjects();
 let cloudProjects: ProjectMeta[] = [];
+let activeProjectId = '';
+let activeProject = readWorkingProject();
 let cloudBaseDocument: CloudProjectDocument | null = null;
-let cloudUnsubscribe: Unsubscribe | null = null;
+let cloudUnsubscribe: (() => void) | null = null;
 let applyingExternalProject = false;
 let cloudWriteInFlight = false;
+let pendingCloudTarget: CanonicalProject | null = null;
+let pendingRemoteCloud: CloudProjectDocument | null = null;
+let cloudWriteIdleResolvers: Array<() => void> = [];
 let projectPanelOpen = false;
 let connectionStatus = 'Local';
 let uiInstalled = false;
-
-function randomId(prefix: string) {
-  const id = typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `${prefix}-${id}`;
-}
 
 function getOrCreateUserId() {
   const existing = localStorage.getItem(USER_ID_KEY);
@@ -121,12 +74,12 @@ function getOrCreateUserId() {
 
 function readSettings(): RuntimeSettings {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '') as Partial<RuntimeSettings>;
+    const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '') as Partial<RuntimeSettings>;
     return {
-      mode: parsed.mode === 'online' ? 'online' : 'local',
-      selectedLocalProjectId: typeof parsed.selectedLocalProjectId === 'string' ? parsed.selectedLocalProjectId : null,
-      selectedOnlineProjectId: typeof parsed.selectedOnlineProjectId === 'string' ? parsed.selectedOnlineProjectId : null,
-      firebaseConfig: parsed.firebaseConfig && typeof parsed.firebaseConfig === 'object' ? parsed.firebaseConfig : null,
+      mode: value.mode === 'online' ? 'online' : 'local',
+      selectedLocalProjectId: typeof value.selectedLocalProjectId === 'string' ? value.selectedLocalProjectId : null,
+      selectedOnlineProjectId: typeof value.selectedOnlineProjectId === 'string' ? value.selectedOnlineProjectId : null,
+      firebaseConfig: value.firebaseConfig && typeof value.firebaseConfig === 'object' ? value.firebaseConfig : null,
     };
   } catch {
     return { mode: 'local', selectedLocalProjectId: null, selectedOnlineProjectId: null, firebaseConfig: null };
@@ -137,69 +90,26 @@ function writeSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
-function readLocalIndex(): ProjectMeta[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(LOCAL_INDEX_KEY) ?? '') as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((item) => {
-      if (!item || typeof item !== 'object') return [];
-      const value = item as Partial<ProjectMeta>;
-      if (typeof value.id !== 'string' || typeof value.name !== 'string') return [];
-      const createdAt = typeof value.createdAt === 'number' ? value.createdAt : Date.now();
-      const updatedAt = typeof value.updatedAt === 'number' ? value.updatedAt : createdAt;
-      return [{ id: value.id, name: value.name, createdAt, updatedAt }];
-    });
-  } catch {
-    return [];
-  }
+function refreshLocalProjects() {
+  localProjects = localStore.listProjects();
 }
 
-function writeLocalIndex() {
-  localStorage.setItem(LOCAL_INDEX_KEY, JSON.stringify(localProjects));
+async function refreshCloudProjects() {
+  cloudProjects = cloudStore.connected ? await cloudStore.listProjects() : [];
+  renderProjectUi();
 }
 
-function localProjectKey(id: string) {
-  return `${LOCAL_PROJECT_PREFIX}${id}`;
+function selectedLocalMeta() {
+  return localProjects.find((item) => item.id === settings.selectedLocalProjectId) ?? localProjects[0] ?? null;
 }
 
-function readWorkingProject() {
-  return normalizeProject(localStorage.getItem(WORKING_PROJECT_KEY) ?? '') ?? createStarterProject();
-}
-
-function readLocalProject(id: string) {
-  return normalizeProject(localStorage.getItem(localProjectKey(id)) ?? '');
-}
-
-function saveLocalProject(id: string, project: CanonicalProject) {
-  localStorage.setItem(localProjectKey(id), JSON.stringify(project));
-  const now = Date.now();
-  localProjects = localProjects.map((item) => item.id === id ? { ...item, updatedAt: now } : item);
-  writeLocalIndex();
-}
-
-function ensureLocalMigration() {
-  if (localProjects.length > 0) return;
-  const now = Date.now();
-  const id = randomId('project');
-  const project = readWorkingProject();
-  localProjects = [{ id, name: 'My Skill Tree', createdAt: now, updatedAt: now }];
-  localStorage.setItem(localProjectKey(id), JSON.stringify(project));
-  writeLocalIndex();
-  settings = { ...settings, selectedLocalProjectId: id };
-  writeSettings();
-
-  const oldHistory = localStorage.getItem(LEGACY_HISTORY_V2_KEY);
-  const nextHistoryKey = `${HISTORY_V3_PREFIX}local:${id}`;
-  if (oldHistory && !localStorage.getItem(nextHistoryKey)) localStorage.setItem(nextHistoryKey, oldHistory);
-}
-
-function projectPath(change: AtomicHistoryChange) {
-  return change.key.join('\u001f');
+function selectedCloudMeta() {
+  return cloudProjects.find((item) => item.id === settings.selectedOnlineProjectId) ?? cloudProjects[0] ?? null;
 }
 
 function dispatchProjectChange(before: CanonicalProject, after: CanonicalProject) {
   const changes = diffProjects(before, after);
-  if (changes.length === 0) return;
+  if (!changes.length) return;
   window.dispatchEvent(new CustomEvent(HISTORY_APPLY_EVENT, {
     detail: { transitions: [{ direction: 'redo', changes }] },
   }));
@@ -220,228 +130,13 @@ async function applyWorkingProject(project: CanonicalProject, scope: string, con
   }
 }
 
-function selectedLocalMeta() {
-  return localProjects.find((item) => item.id === settings.selectedLocalProjectId) ?? localProjects[0] ?? null;
-}
-
-async function switchLocalProject(id: string) {
-  const project = readLocalProject(id);
-  if (!project) return;
-  stopCloudSubscription();
-  mode = 'local';
-  settings = { ...settings, mode: 'local', selectedLocalProjectId: id };
-  writeSettings();
-  activeProjectId = id;
-  connectionStatus = 'Local';
-  await applyWorkingProject(project, `local:${id}`, null);
-  renderProjectUi();
-}
-
-async function createLocalProject(source?: CanonicalProject, name?: string) {
-  const now = Date.now();
-  const id = randomId('project');
-  const project = cloneValue(source ?? createBlankProject(activeProject));
-  localProjects = [...localProjects, {
-    id,
-    name: name ?? `Skill Tree ${localProjects.length + 1}`,
-    createdAt: now,
-    updatedAt: now,
-  }];
-  localStorage.setItem(localProjectKey(id), JSON.stringify(project));
-  writeLocalIndex();
-  await switchLocalProject(id);
-}
-
-async function deleteLocalProject(id: string) {
-  if (localProjects.length <= 1) {
-    window.alert('At least one local project must remain.');
-    return;
-  }
-  const meta = localProjects.find((item) => item.id === id);
-  if (!meta || !window.confirm(`Delete local project “${meta.name}”?`)) return;
-  localStorage.removeItem(localProjectKey(id));
-  localStorage.removeItem(`${HISTORY_V3_PREFIX}local:${id}`);
-  localProjects = localProjects.filter((item) => item.id !== id);
-  writeLocalIndex();
-  if (settings.selectedLocalProjectId === id) await switchLocalProject(localProjects[0].id);
-  else renderProjectUi();
-}
-
-function renameLocalProject(id: string) {
-  const meta = localProjects.find((item) => item.id === id);
-  if (!meta) return;
-  const name = window.prompt('Project name', meta.name)?.trim();
-  if (!name) return;
-  localProjects = localProjects.map((item) => item.id === id ? { ...item, name, updatedAt: Date.now() } : item);
-  writeLocalIndex();
-  renderProjectUi();
-}
-
-async function configureFirebase(config: FirebaseOptions) {
-  stopCloudSubscription();
-  if (firebaseApp) {
-    await deleteApp(firebaseApp);
-    firebaseApp = null;
-    firestore = null;
-  }
-  const existing = getApps().find((app) => app.name === FIREBASE_APP_NAME);
-  if (existing) await deleteApp(getApp(FIREBASE_APP_NAME));
-  firebaseApp = initializeApp(config, FIREBASE_APP_NAME);
-  firestore = getFirestore(firebaseApp);
-  settings = { ...settings, firebaseConfig: config };
-  writeSettings();
-  connectionStatus = 'Cloud ready';
-  await refreshCloudProjects();
-}
-
-function parseCloudDocument(raw: unknown): CloudProjectDocument | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const value = raw as Partial<CloudProjectDocument>;
-  const project = normalizeProject(value.project);
-  if (!project || typeof value.name !== 'string') return null;
-  return {
-    name: value.name,
-    createdAt: typeof value.createdAt === 'number' ? value.createdAt : Date.now(),
-    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
-    revision: typeof value.revision === 'number' ? value.revision : 0,
-    project,
-    fieldWriters: value.fieldWriters && typeof value.fieldWriters === 'object' ? value.fieldWriters : {},
-    entityWriters: value.entityWriters && typeof value.entityWriters === 'object' ? value.entityWriters : {},
-  };
-}
-
-async function refreshCloudProjects() {
-  if (!firestore) return;
-  const snapshot = await getDocs(query(collection(firestore, CLOUD_COLLECTION)));
-  cloudProjects = snapshot.docs.flatMap((item) => {
-    const parsed = parseCloudDocument(item.data());
-    return parsed ? [{ id: item.id, name: parsed.name, createdAt: parsed.createdAt, updatedAt: parsed.updatedAt }] : [];
-  }).sort((a, b) => b.updatedAt - a.updatedAt);
-  renderProjectUi();
-}
-
-function onlineHistoryController(projectId: string): OnlineHistoryController {
-  return {
-    async load() {
-      if (!firestore) return { entries: [], cursor: -1 };
-      const snapshot = await getDoc(doc(firestore, CLOUD_COLLECTION, projectId, 'histories', userId));
-      if (!snapshot.exists()) return { entries: [], cursor: -1 };
-      const data = snapshot.data() as Partial<HistoryState>;
-      return {
-        entries: Array.isArray(data.entries) ? data.entries as HistoryEntry[] : [],
-        cursor: typeof data.cursor === 'number' ? data.cursor : -1,
-      };
-    },
-    async save(state) {
-      if (!firestore) return;
-      await setDoc(doc(firestore, CLOUD_COLLECTION, projectId, 'histories', userId), {
-        entries: state.entries.slice(-50),
-        cursor: state.cursor,
-        updatedAt: Date.now(),
-      });
-    },
-    async apply(direction, entry) {
-      return applyCloudHistory(projectId, direction, entry);
-    },
-  };
-}
-
-async function createCloudProject(source?: CanonicalProject, name?: string) {
-  if (!firestore) throw new Error('Configure Firebase first.');
-  const id = randomId('project');
-  const now = Date.now();
-  const project = cloneValue(source ?? createBlankProject(activeProject));
-  const cloud: CloudProjectDocument = {
-    name: name ?? `Skill Tree ${cloudProjects.length + 1}`,
-    createdAt: now,
-    updatedAt: now,
-    revision: 0,
-    project,
-    fieldWriters: {},
-    entityWriters: {},
-  };
-  await setDoc(doc(firestore, CLOUD_COLLECTION, id), cloud);
-  await refreshCloudProjects();
-  await switchOnlineProject(id);
-}
-
-async function deleteCloudProject(id: string) {
-  if (!firestore) return;
-  const meta = cloudProjects.find((item) => item.id === id);
-  if (!meta || !window.confirm(`Delete shared project “${meta.name}”? This affects every collaborator.`)) return;
-  const historySnapshot = await getDocs(collection(firestore, CLOUD_COLLECTION, id, 'histories'));
-  await Promise.all(historySnapshot.docs.map((historyDoc) => deleteDoc(historyDoc.ref)));
-  await deleteDoc(doc(firestore, CLOUD_COLLECTION, id));
-  cloudProjects = cloudProjects.filter((item) => item.id !== id);
-  if (settings.selectedOnlineProjectId === id) {
-    const next = cloudProjects[0];
-    if (next) await switchOnlineProject(next.id);
-    else {
-      const local = selectedLocalMeta();
-      if (local) await switchLocalProject(local.id);
-    }
-  }
-  renderProjectUi();
-}
-
-async function renameCloudProject(id: string) {
-  if (!firestore) return;
-  const meta = cloudProjects.find((item) => item.id === id);
-  if (!meta) return;
-  const name = window.prompt('Project name', meta.name)?.trim();
-  if (!name) return;
-  await runTransaction(firestore, async (transaction) => {
-    const ref = doc(firestore!, CLOUD_COLLECTION, id);
-    const snapshot = await transaction.get(ref);
-    if (!snapshot.exists()) throw new Error('Project no longer exists.');
-    transaction.update(ref, { name, updatedAt: Date.now() });
-  });
-  await refreshCloudProjects();
-}
-
-function stopCloudSubscription() {
-  cloudUnsubscribe?.();
-  cloudUnsubscribe = null;
-  cloudBaseDocument = null;
-}
-
-async function switchOnlineProject(id: string) {
-  if (!firestore) return;
-  const snapshot = await getDoc(doc(firestore, CLOUD_COLLECTION, id));
-  if (!snapshot.exists()) return;
-  const cloud = parseCloudDocument(snapshot.data());
-  if (!cloud) throw new Error('Cloud project is invalid.');
-  stopCloudSubscription();
-  mode = 'online';
-  settings = { ...settings, mode: 'online', selectedOnlineProjectId: id };
-  writeSettings();
-  activeProjectId = id;
-  cloudBaseDocument = cloneValue(cloud);
-  connectionStatus = 'Online';
-  await applyWorkingProject(cloud.project, `online:${id}:${userId}`, onlineHistoryController(id));
-
-  cloudUnsubscribe = onSnapshot(doc(firestore, CLOUD_COLLECTION, id), (nextSnapshot) => {
-    if (!nextSnapshot.exists()) return;
-    const nextCloud = parseCloudDocument(nextSnapshot.data());
-    if (!nextCloud) return;
-    connectionStatus = 'Online';
-    cloudBaseDocument = cloneValue(nextCloud);
-    if (!cloudWriteInFlight) {
-      const working = readWorkingProject();
-      if (!sameValue(working, nextCloud.project)) void applyRemoteSnapshot(nextCloud.project);
-      else activeProject = cloneValue(nextCloud.project);
-    }
-    renderProjectUi();
-  }, () => {
-    connectionStatus = 'Disconnected';
-    renderProjectUi();
-  });
-  renderProjectUi();
-}
-
 async function applyRemoteSnapshot(project: CanonicalProject) {
   if (applyingExternalProject) return;
   const before = readWorkingProject();
+  if (sameValue(before, project)) {
+    activeProject = cloneValue(project);
+    return;
+  }
   applyingExternalProject = true;
   setHistoryExternalRecording(true);
   try {
@@ -454,159 +149,275 @@ async function applyRemoteSnapshot(project: CanonicalProject) {
   }
 }
 
-function sameValueAtPath(left: CanonicalProject, right: CanonicalProject, change: AtomicHistoryChange) {
-  const a = readAtKey(left, change.key);
-  const b = readAtKey(right, change.key);
-  return a.exists === b.exists && (!a.exists || sameValue(a.value, b.value));
+function stopCloudSubscription() {
+  cloudUnsubscribe?.();
+  cloudUnsubscribe = null;
+  cloudBaseDocument = null;
+  pendingRemoteCloud = null;
+  pendingCloudTarget = null;
 }
 
-function sameWriter(left: Record<string, string>, right: Record<string, string>, key: string) {
-  return (left[key] ?? null) === (right[key] ?? null);
+function waitForCloudWrites() {
+  if (!cloudWriteInFlight) return Promise.resolve();
+  return new Promise<void>((resolve) => cloudWriteIdleResolvers.push(resolve));
 }
 
-async function commitCloudEdit(requestedProject: CanonicalProject) {
-  if (!firestore || !cloudBaseDocument || mode !== 'online' || !activeProjectId || cloudWriteInFlight) return;
-  const base = cloneValue(cloudBaseDocument);
-  const requestedChanges = diffProjects(base.project, requestedProject);
-  if (requestedChanges.length === 0) return;
-  const mutationId = randomId(`mutation-${userId.slice(0, 8)}`);
+function notifyCloudWriteIdle() {
+  const resolvers = cloudWriteIdleResolvers;
+  cloudWriteIdleResolvers = [];
+  resolvers.forEach((resolve) => resolve());
+}
+
+function isCloudBusy() {
+  return cloudWriteInFlight || Boolean(pendingCloudTarget);
+}
+
+async function switchLocalProject(id: string) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before switching projects.');
+  const project = localStore.getProject(id);
+  if (!project) throw new Error('That local project no longer exists.');
+  stopCloudSubscription();
+  mode = 'local';
+  activeProjectId = id;
+  connectionStatus = 'Local';
+  settings = { ...settings, mode: 'local', selectedLocalProjectId: id };
+  writeSettings();
+  await applyWorkingProject(project, `local:${id}`, null);
+  renderProjectUi();
+}
+
+async function createLocalProject(source?: CanonicalProject, name?: string) {
+  const created = localStore.createProject(source, name);
+  refreshLocalProjects();
+  await switchLocalProject(created.meta.id);
+}
+
+async function deleteLocalProject(id: string) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before managing projects.');
+  const meta = localProjects.find((item) => item.id === id);
+  if (!meta || !window.confirm(`Delete local project “${meta.name}”?`)) return;
+  localStore.deleteProject(id);
+  refreshLocalProjects();
+  if (activeProjectId === id && mode === 'local') await switchLocalProject(localProjects[0].id);
+  else renderProjectUi();
+}
+
+function renameLocalProject(id: string) {
+  const meta = localProjects.find((item) => item.id === id);
+  if (!meta) return;
+  const name = window.prompt('Project name', meta.name)?.trim();
+  if (!name) return;
+  localStore.renameProject(id, name);
+  refreshLocalProjects();
+  renderProjectUi();
+}
+
+async function configureFirebase(config: FirebaseOptions) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before changing Firebase.');
+  stopCloudSubscription();
+  connectionStatus = 'Connecting…';
+  renderProjectUi();
+  await cloudStore.connect(config);
+  settings = { ...settings, firebaseConfig: cloneValue(config) };
+  writeSettings();
+  connectionStatus = 'Cloud ready';
+  await refreshCloudProjects();
+}
+
+function onlineHistoryController(projectId: string): OnlineHistoryController {
+  return {
+    load: () => cloudStore.loadHistory(projectId, userId),
+    save: (state) => cloudStore.saveHistory(projectId, userId, state),
+    async apply(direction, entry) {
+      await waitForCloudWrites();
+      if (mode !== 'online' || activeProjectId !== projectId) {
+        return { ok: false, reason: 'The active cloud project changed.' };
+      }
+      cloudWriteInFlight = true;
+      connectionStatus = 'Saving…';
+      renderProjectUi();
+      try {
+        const result = await cloudStore.applyHistory(projectId, userId, direction, entry);
+        if (!result.ok || !result.project || !result.cloud) return result;
+        const newest = newerCloudDocument(result.cloud, pendingRemoteCloud ?? result.cloud);
+        pendingRemoteCloud = null;
+        cloudBaseDocument = newest;
+        activeProject = cloneValue(newest.project);
+        return { ...result, project: cloneValue(newest.project) };
+      } finally {
+        cloudWriteInFlight = false;
+        connectionStatus = 'Online';
+        notifyCloudWriteIdle();
+        renderProjectUi();
+      }
+    },
+  };
+}
+
+async function switchOnlineProject(id: string) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before switching projects.');
+  const cloud = await cloudStore.getProject(id);
+  if (!cloud) throw new Error('That cloud project no longer exists.');
+  stopCloudSubscription();
+  mode = 'online';
+  activeProjectId = id;
+  cloudBaseDocument = cloneValue(cloud);
+  connectionStatus = 'Online';
+  settings = { ...settings, mode: 'online', selectedOnlineProjectId: id };
+  writeSettings();
+  await applyWorkingProject(cloud.project, `online:${id}:${userId}`, onlineHistoryController(id));
+
+  cloudUnsubscribe = cloudStore.subscribe(id, (nextCloud) => {
+    if (mode !== 'online' || activeProjectId !== id) return;
+    if (cloudWriteInFlight) {
+      pendingRemoteCloud = newerCloudDocument(pendingRemoteCloud, nextCloud);
+    } else {
+      cloudBaseDocument = newerCloudDocument(cloudBaseDocument, nextCloud);
+      const working = readWorkingProject();
+      if (!sameValue(working, nextCloud.project)) void applyRemoteSnapshot(nextCloud.project);
+      else activeProject = cloneValue(nextCloud.project);
+      connectionStatus = 'Online';
+    }
+    renderProjectUi();
+  }, () => {
+    connectionStatus = 'Disconnected';
+    renderProjectUi();
+  });
+  renderProjectUi();
+}
+
+async function createCloudProject(source?: CanonicalProject, name?: string) {
+  if (!cloudStore.connected) throw new Error('Configure Firebase first.');
+  const project = cloneValue(source ?? createBlankProject(activeProject));
+  const created = await cloudStore.createProject(project, name ?? `Skill Tree ${cloudProjects.length + 1}`);
+  await refreshCloudProjects();
+  await switchOnlineProject(created.id);
+}
+
+async function deleteCloudProject(id: string) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before managing projects.');
+  const meta = cloudProjects.find((item) => item.id === id);
+  if (!meta || !window.confirm(`Delete shared project “${meta.name}”? This affects every collaborator.`)) return;
+  const deletingActive = mode === 'online' && activeProjectId === id;
+  if (deletingActive) stopCloudSubscription();
+  await cloudStore.deleteProject(id);
+  await refreshCloudProjects();
+  if (!deletingActive) return;
+  const next = selectedCloudMeta();
+  if (next) await switchOnlineProject(next.id);
+  else {
+    const local = selectedLocalMeta();
+    if (local) await switchLocalProject(local.id);
+  }
+}
+
+async function renameCloudProject(id: string) {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before managing projects.');
+  const meta = cloudProjects.find((item) => item.id === id);
+  if (!meta) return;
+  const name = window.prompt('Project name', meta.name)?.trim();
+  if (!name) return;
+  await cloudStore.renameProject(id, name);
+  await refreshCloudProjects();
+}
+
+async function reconcileAfterCloudFailure(projectId: string) {
+  try {
+    const current = await cloudStore.getProject(projectId);
+    if (current) cloudBaseDocument = newerCloudDocument(cloudBaseDocument, current);
+  } catch {
+    // Keep the newest subscribed state if a recovery read also fails.
+  }
+  if (pendingRemoteCloud) {
+    cloudBaseDocument = newerCloudDocument(cloudBaseDocument, pendingRemoteCloud);
+    pendingRemoteCloud = null;
+  }
+  if (cloudBaseDocument) await applyRemoteSnapshot(cloudBaseDocument.project);
+}
+
+async function drainCloudEdits() {
+  if (cloudWriteInFlight || !pendingCloudTarget || !cloudStore.connected || !cloudBaseDocument || mode !== 'online' || !activeProjectId) return;
+  const projectId = activeProjectId;
   cloudWriteInFlight = true;
   connectionStatus = 'Saving…';
   renderProjectUi();
 
   try {
-    let committedBefore: CanonicalProject | null = null;
-    let committedAfter: CanonicalProject | null = null;
-    let committedCloud: CloudProjectDocument | null = null;
-    await runTransaction(firestore, async (transaction) => {
-      const ref = doc(firestore!, CLOUD_COLLECTION, activeProjectId);
-      const snapshot = await transaction.get(ref);
-      if (!snapshot.exists()) throw new Error('The shared project was deleted.');
-      const cloud = parseCloudDocument(snapshot.data());
-      if (!cloud) throw new Error('The shared project is invalid.');
+    while (pendingCloudTarget && mode === 'online' && activeProjectId === projectId) {
+      const submitted = pendingCloudTarget;
+      pendingCloudTarget = null;
+      const base = cloneValue(cloudBaseDocument);
+      const committed = await cloudStore.commitProject(projectId, base, submitted, userId);
 
-      for (const change of requestedChanges) {
-        if (!sameValueAtPath(cloud.project, base.project, change)
-          || !sameWriter(cloud.fieldWriters, base.fieldWriters, projectPath(change))) {
-          throw new Error('A collaborator changed the same part of the project. Your edit was not applied.');
+      if (!committed) continue;
+      cloudBaseDocument = newerCloudDocument(committed.cloud, pendingRemoteCloud ?? committed.cloud);
+      pendingRemoteCloud = null;
+      activeProject = cloneValue(committed.after);
+      recordCommittedHistory(committed.before, committed.after, committed.history);
+      await flushHistoryWrites();
+
+      if (pendingCloudTarget) {
+        const latestLocal = pendingCloudTarget;
+        pendingCloudTarget = null;
+        const rebased = rebaseQueuedProject(cloudBaseDocument, base, submitted, latestLocal, committed, userId);
+        if (!rebased.ok) throw new Error(rebased.reason);
+        if (rebased.changes.length) {
+          pendingCloudTarget = rebased.project;
+          await applyRemoteSnapshot(rebased.project);
         }
       }
-      for (const key of guardEntityKeys(requestedChanges)) {
-        if (!sameWriter(cloud.entityWriters, base.entityWriters, key)) {
-          throw new Error('A collaborator modified an entity this structural edit depends on.');
-        }
-      }
-
-      let next: unknown = cloud.project;
-      requestedChanges.forEach((change) => {
-        next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
-      });
-      const nextProject = next as CanonicalProject;
-      const graphIssue = validateProjectGraph(nextProject);
-      if (graphIssue) throw new Error(graphIssue);
-
-      const fieldWriters = { ...cloud.fieldWriters };
-      requestedChanges.forEach((change) => { fieldWriters[projectPath(change)] = mutationId; });
-      const entityWriters = { ...cloud.entityWriters };
-      touchedEntityKeys(cloud.project, nextProject, requestedChanges).forEach((key) => { entityWriters[key] = mutationId; });
-      const nextCloud: CloudProjectDocument = {
-        ...cloud,
-        project: nextProject,
-        revision: cloud.revision + 1,
-        updatedAt: Date.now(),
-        fieldWriters,
-        entityWriters,
-      };
-      committedBefore = cloneValue(cloud.project);
-      committedAfter = cloneValue(nextProject);
-      committedCloud = cloneValue(nextCloud);
-      transaction.set(ref, nextCloud);
-    });
-
-    if (committedBefore && committedAfter && committedCloud) {
-      cloudBaseDocument = cloneValue(committedCloud);
-      activeProject = cloneValue(committedAfter);
-      recordCommittedHistory(committedBefore, committedAfter, mutationId);
-      connectionStatus = 'Online';
     }
-  } catch (error) {
-    connectionStatus = 'Conflict';
-    window.alert(error instanceof Error ? error.message : 'The cloud edit could not be saved.');
+
+    if (pendingRemoteCloud) {
+      cloudBaseDocument = newerCloudDocument(cloudBaseDocument, pendingRemoteCloud);
+      pendingRemoteCloud = null;
+    }
     if (cloudBaseDocument) await applyRemoteSnapshot(cloudBaseDocument.project);
+    connectionStatus = 'Online';
+  } catch (error) {
+    pendingCloudTarget = null;
+    connectionStatus = 'Conflict';
+    await reconcileAfterCloudFailure(projectId);
+    window.alert(error instanceof Error ? error.message : 'The cloud edit could not be saved.');
   } finally {
     cloudWriteInFlight = false;
+    notifyCloudWriteIdle();
     renderProjectUi();
+    if (pendingCloudTarget && mode === 'online' && activeProjectId === projectId) void drainCloudEdits();
   }
 }
 
-function historyOwnershipMatches(cloud: CloudProjectDocument, entry: HistoryEntry) {
-  if (!entry.mutationId) return false;
-  const fieldsOwned = entry.changes.every((change) => cloud.fieldWriters[projectPath(change)] === entry.mutationId);
-  const entitiesOwned = guardEntityKeys(entry.changes).every((key) => cloud.entityWriters[key] === entry.mutationId);
-  return fieldsOwned && entitiesOwned;
+function commitCloudEdit(project: CanonicalProject) {
+  if (!cloudStore.connected || !cloudBaseDocument || mode !== 'online' || !activeProjectId) return;
+  pendingCloudTarget = cloneValue(project);
+  if (!cloudWriteInFlight) void drainCloudEdits();
 }
 
-async function applyCloudHistory(projectId: string, direction: HistoryDirection, entry: HistoryEntry) {
-  if (!firestore || !entry.mutationId) {
-    return { ok: false, reason: 'This history entry predates collaborative mutation tracking.' };
+async function handleProjectSave(rawProject: string) {
+  if (applyingExternalProject) return;
+  const normalized = normalizeProject(rawProject);
+  if (!normalized) return;
+  activeProject = cloneValue(normalized);
+  if (mode === 'local') {
+    if (activeProjectId) {
+      localStore.saveProject(activeProjectId, normalized);
+      refreshLocalProjects();
+    }
+    renderProjectUi();
+    return;
   }
-  const nextMutationId = randomId(`${direction}-${userId.slice(0, 8)}`);
-  try {
-    let resultProject: CanonicalProject | null = null;
-    let resultCloud: CloudProjectDocument | null = null;
-    await runTransaction(firestore, async (transaction) => {
-      const ref = doc(firestore!, CLOUD_COLLECTION, projectId);
-      const snapshot = await transaction.get(ref);
-      if (!snapshot.exists()) throw new Error('The shared project was deleted.');
-      const cloud = parseCloudDocument(snapshot.data());
-      if (!cloud) throw new Error('The shared project is invalid.');
-
-      if (!historyOwnershipMatches(cloud, entry)
-        || !entry.changes.every((change) => valueMatchesSide(cloud.project, change, direction))) {
-        throw new Error('Another collaborator changed state affected by this history entry.');
-      }
-
-      let next: unknown = cloud.project;
-      const ordered = direction === 'undo' ? [...entry.changes].reverse() : entry.changes;
-      ordered.forEach((change) => {
-        const side = sideForDirection(change, direction);
-        next = applyAtKey(next, change.key, side.exists, side.value, side.index);
-      });
-      const nextProject = next as CanonicalProject;
-      const graphIssue = validateProjectGraph(nextProject);
-      if (graphIssue) throw new Error(graphIssue);
-
-      const fieldWriters = { ...cloud.fieldWriters };
-      entry.changes.forEach((change) => { fieldWriters[projectPath(change)] = nextMutationId; });
-      const entityWriters = { ...cloud.entityWriters };
-      touchedEntityKeys(cloud.project, nextProject, entry.changes).forEach((key) => { entityWriters[key] = nextMutationId; });
-      const nextCloud: CloudProjectDocument = {
-        ...cloud,
-        project: nextProject,
-        revision: cloud.revision + 1,
-        updatedAt: Date.now(),
-        fieldWriters,
-        entityWriters,
-      };
-      transaction.set(ref, nextCloud);
-      resultProject = cloneValue(nextProject);
-      resultCloud = cloneValue(nextCloud);
-    });
-    if (!resultProject || !resultCloud) return { ok: false, reason: 'The history transaction did not produce a project.' };
-    cloudBaseDocument = cloneValue(resultCloud);
-    activeProject = cloneValue(resultProject);
-    return { ok: true, project: resultProject, mutationId: nextMutationId };
-  } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : 'The shared project changed.' };
-  }
+  commitCloudEdit(normalized);
 }
+
+window.addEventListener(PROJECT_SAVED_EVENT, (event) => {
+  const rawProject = (event as CustomEvent<{ rawProject?: string }>).detail?.rawProject;
+  if (typeof rawProject === 'string') void handleProjectSave(rawProject);
+});
 
 async function copyCurrentToOtherMode() {
+  if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before copying projects.');
   if (mode === 'local') {
-    if (!firestore) {
-      window.alert('Configure Firebase before copying a project online.');
-      return;
-    }
+    if (!cloudStore.connected) throw new Error('Configure Firebase before copying a project online.');
     const meta = selectedLocalMeta();
     await createCloudProject(readWorkingProject(), meta ? `${meta.name} (Cloud)` : undefined);
   } else {
@@ -614,24 +425,6 @@ async function copyCurrentToOtherMode() {
     await createLocalProject(readWorkingProject(), meta ? `${meta.name} (Local)` : undefined);
   }
 }
-
-async function handleProjectSave(rawProject: string) {
-  if (applyingExternalProject) return;
-  const project = normalizeProject(rawProject);
-  if (!project) return;
-  activeProject = cloneValue(project);
-  if (mode === 'local') {
-    if (activeProjectId) saveLocalProject(activeProjectId, project);
-    renderProjectUi();
-    return;
-  }
-  await commitCloudEdit(project);
-}
-
-window.addEventListener(PROJECT_SAVED_EVENT, (event) => {
-  const rawProject = (event as CustomEvent<{ rawProject?: string }>).detail?.rawProject;
-  if (typeof rawProject === 'string') void handleProjectSave(rawProject);
-});
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]!);
@@ -642,17 +435,16 @@ function projectButton(meta: ProjectMeta, selected: boolean) {
 }
 
 function renderProjectUi() {
+  document.body.classList.toggle('cloud-disconnected', mode === 'online' && (!cloudStore.connected || connectionStatus === 'Disconnected' || !activeProjectId));
+  document.body.classList.toggle('cloud-saving', cloudWriteInFlight);
   const panel = document.querySelector<HTMLElement>('.project-manager-panel');
   const trigger = document.querySelector<HTMLElement>('.project-manager-button');
-  document.body.classList.toggle('cloud-disconnected', mode === 'online' && connectionStatus === 'Disconnected');
   if (trigger) {
     const activeMeta = mode === 'local'
       ? localProjects.find((item) => item.id === activeProjectId)
       : cloudProjects.find((item) => item.id === activeProjectId);
-    const label = trigger.querySelector<HTMLElement>('.project-manager-button-label');
-    const status = trigger.querySelector<HTMLElement>('.project-manager-status');
-    if (label) label.textContent = activeMeta?.name ?? 'Projects';
-    if (status) status.textContent = mode === 'local' ? 'Local' : connectionStatus;
+    trigger.querySelector<HTMLElement>('.project-manager-button-label')!.textContent = activeMeta?.name ?? 'Projects';
+    trigger.querySelector<HTMLElement>('.project-manager-status')!.textContent = mode === 'local' ? 'Local' : connectionStatus;
   }
   if (!panel) return;
   panel.hidden = !projectPanelOpen;
@@ -661,10 +453,11 @@ function renderProjectUi() {
   panel.innerHTML = `
     <div class="project-manager-head"><div><strong>Projects</strong><small>User ${escapeHtml(userId.slice(0, 8))}</small></div><button type="button" data-project-action="close">×</button></div>
     <div class="project-manager-tabs"><button type="button" data-project-mode="local" class="${mode === 'local' ? 'active' : ''}">Local</button><button type="button" data-project-mode="online" class="${mode === 'online' ? 'active' : ''}">Online</button></div>
-    ${mode === 'online' && !firestore ? `<div class="project-manager-config"><strong>Firebase configuration</strong><small>Trusted collaborators can use the same Firestore-enabled config.</small><textarea spellcheck="false" placeholder='{"apiKey":"...","projectId":"..."}'>${escapeHtml(configText)}</textarea><button type="button" data-project-action="connect">Connect Firebase</button></div>` : ''}
-    ${mode === 'online' && firestore ? `<div class="project-manager-connection"><span>${escapeHtml(connectionStatus)}</span><button type="button" data-project-action="configure">Change Firebase</button></div>` : ''}
-    <div class="project-manager-list">${list.length ? list.map((item) => projectButton(item, item.id === activeProjectId)).join('') : `<div class="project-manager-empty">${mode === 'online' && !firestore ? 'Connect Firebase to view cloud projects.' : 'No projects yet.'}</div>`}</div>
-    <div class="project-manager-actions"><button type="button" data-project-action="new" ${mode === 'online' && !firestore ? 'disabled' : ''}>New</button><button type="button" data-project-action="duplicate" ${!activeProjectId || (mode === 'online' && !firestore) ? 'disabled' : ''}>Duplicate</button><button type="button" data-project-action="copy" ${!activeProjectId || (mode === 'online' && !firestore) ? 'disabled' : ''}>${mode === 'local' ? 'Copy Online' : 'Copy Local'}</button></div>`;
+    ${cloudWriteInFlight ? '<div class="project-manager-busy">Saving the current cloud edits…</div>' : ''}
+    ${mode === 'online' && !cloudStore.connected ? `<div class="project-manager-config"><strong>Firebase configuration</strong><small>Trusted collaborators can use the same Firestore-enabled config.</small><textarea spellcheck="false" placeholder='{"apiKey":"...","projectId":"..."}'>${escapeHtml(configText)}</textarea><button type="button" data-project-action="connect">Connect Firebase</button></div>` : ''}
+    ${mode === 'online' && cloudStore.connected ? `<div class="project-manager-connection"><span>${escapeHtml(connectionStatus)}</span><button type="button" data-project-action="configure">Change Firebase</button></div>` : ''}
+    <div class="project-manager-list">${list.length ? list.map((item) => projectButton(item, item.id === activeProjectId)).join('') : `<div class="project-manager-empty">${mode === 'online' && !cloudStore.connected ? 'Connect Firebase to view cloud projects.' : 'No projects yet.'}</div>`}</div>
+    <div class="project-manager-actions"><button type="button" data-project-action="new" ${mode === 'online' && !cloudStore.connected ? 'disabled' : ''}>New</button><button type="button" data-project-action="duplicate" ${!activeProjectId || (mode === 'online' && !cloudStore.connected) ? 'disabled' : ''}>Duplicate</button><button type="button" data-project-action="copy" ${!activeProjectId || (mode === 'local' && !cloudStore.connected) ? 'disabled' : ''}>${mode === 'local' ? 'Copy Online' : 'Copy Local'}</button></div>`;
 }
 
 function installProjectUi() {
@@ -672,11 +465,6 @@ function installProjectUi() {
   const actions = document.querySelector<HTMLElement>('.top-actions');
   if (!actions) return false;
   uiInstalled = true;
-  const style = document.createElement('style');
-  style.textContent = `
-    .project-manager-control{position:relative;display:inline-flex}.project-manager-button{max-width:190px;display:inline-grid!important;grid-template-columns:1fr auto;grid-template-rows:auto auto;column-gap:8px;text-align:left}.project-manager-button-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-manager-status{grid-column:1/-1;font-size:8px;opacity:.55}.project-manager-panel{position:absolute;top:calc(100% + 9px);right:0;width:min(390px,calc(100vw - 24px));max-height:min(650px,calc(100vh - 90px));overflow:auto;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(14,17,23,.98);box-shadow:0 20px 60px rgba(0,0,0,.45);color:#dfe4e9;z-index:110}.project-manager-panel[hidden]{display:none}.project-manager-head,.project-manager-connection,.project-manager-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}.project-manager-head>div{display:grid;gap:2px}.project-manager-head small,.project-manager-config small,.project-manager-select small{font-size:9px;color:#707987}.project-manager-head button,.project-manager-icon{border:0;background:transparent;color:#89919d}.project-manager-tabs{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:8px}.project-manager-tabs button,.project-manager-actions button,.project-manager-config button,.project-manager-connection button{border:1px solid rgba(255,255,255,.1);border-radius:8px;background:#151a22;color:#abb3be;padding:8px 10px}.project-manager-tabs button.active{color:#dfffb4;border-color:rgba(182,255,86,.28);background:rgba(182,255,86,.07)}.project-manager-config{display:grid;gap:7px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.07);border-bottom:1px solid rgba(255,255,255,.07)}.project-manager-config textarea{min-height:130px;resize:vertical;border:1px solid rgba(255,255,255,.11);border-radius:8px;background:#0c1016;color:#cbd2db;padding:9px;font:10px/1.45 monospace}.project-manager-list{display:grid;gap:3px;padding:6px;max-height:315px;overflow:auto}.project-manager-row{display:grid;grid-template-columns:1fr 30px 30px;align-items:center;border-radius:8px}.project-manager-row.is-selected{background:rgba(182,255,86,.055)}.project-manager-select{min-width:0;display:grid;gap:2px;padding:8px 9px;border:0;background:transparent;color:#cfd5dd;text-align:left}.project-manager-select strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px}.project-manager-icon.danger:hover{color:#ff7769}.project-manager-empty{padding:24px 12px;text-align:center;color:#69727f;font-size:10px}.project-manager-actions{border-top:1px solid rgba(255,255,255,.08);border-bottom:0;justify-content:flex-start;flex-wrap:wrap}.project-manager-actions button:disabled{opacity:.35}.cloud-disconnected .react-flow,.cloud-disconnected .workspace-main{pointer-events:none;opacity:.78}`;
-  document.head.appendChild(style);
-
   const control = document.createElement('div');
   control.className = 'project-manager-control';
   control.innerHTML = `<button type="button" class="ghost project-manager-button"><span class="project-manager-button-label">Projects</span><span>▾</span><small class="project-manager-status">Local</small></button><div class="project-manager-panel" hidden></div>`;
@@ -690,30 +478,40 @@ function installProjectUi() {
     event.stopPropagation();
     const target = event.target as HTMLElement;
     const modeButton = target.closest<HTMLElement>('[data-project-mode]');
-    if (modeButton) {
-      const nextMode = modeButton.dataset.projectMode as StorageMode;
-      if (nextMode === 'local') {
-        const local = selectedLocalMeta();
-        if (local) await switchLocalProject(local.id);
-      } else if (!firestore) {
-        mode = 'online';
-        renderProjectUi();
-      } else if (cloudProjects.length) {
-        const selected = settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
-          ? settings.selectedOnlineProjectId
-          : cloudProjects[0].id;
-        await switchOnlineProject(selected);
-      } else {
-        mode = 'online';
-        renderProjectUi();
-      }
-      return;
-    }
-
-    const row = target.closest<HTMLElement>('[data-project-id]');
-    const action = target.closest<HTMLElement>('[data-project-action]')?.dataset.projectAction;
-    const id = row?.dataset.projectId;
     try {
+      if (modeButton) {
+        if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before switching storage modes.');
+        const nextMode = modeButton.dataset.projectMode as StorageMode;
+        if (nextMode === 'local') {
+          const local = selectedLocalMeta();
+          if (local) await switchLocalProject(local.id);
+        } else if (!cloudStore.connected) {
+          stopCloudSubscription();
+          mode = 'online';
+          activeProjectId = '';
+          connectionStatus = 'Not connected';
+          settings = { ...settings, mode: 'online' };
+          writeSettings();
+          renderProjectUi();
+        } else {
+          const selected = selectedCloudMeta();
+          if (selected) await switchOnlineProject(selected.id);
+          else {
+            stopCloudSubscription();
+            mode = 'online';
+            activeProjectId = '';
+            connectionStatus = 'Cloud ready';
+            settings = { ...settings, mode: 'online' };
+            writeSettings();
+            renderProjectUi();
+          }
+        }
+        return;
+      }
+
+      const row = target.closest<HTMLElement>('[data-project-id]');
+      const action = target.closest<HTMLElement>('[data-project-action]')?.dataset.projectAction;
+      const id = row?.dataset.projectId;
       if (!action && row && target.closest('.project-manager-select')) {
         if (mode === 'local') await switchLocalProject(id!); else await switchOnlineProject(id!);
       } else if (action === 'close') {
@@ -740,14 +538,21 @@ function installProjectUi() {
         if (!config.projectId || !config.apiKey) throw new Error('The Firebase config needs at least apiKey and projectId.');
         await configureFirebase(config);
         mode = 'online';
-        if (cloudProjects.length) await switchOnlineProject(cloudProjects[0].id);
-        else renderProjectUi();
+        settings = { ...settings, mode: 'online' };
+        writeSettings();
+        const selected = selectedCloudMeta();
+        if (selected) await switchOnlineProject(selected.id);
+        else {
+          activeProjectId = '';
+          renderProjectUi();
+        }
       } else if (action === 'configure') {
+        if (isCloudBusy()) throw new Error('Wait for the current cloud save to finish before changing Firebase.');
         stopCloudSubscription();
-        if (firebaseApp) await deleteApp(firebaseApp);
-        firebaseApp = null;
-        firestore = null;
+        await cloudStore.disconnect();
+        cloudProjects = [];
         mode = 'online';
+        activeProjectId = '';
         connectionStatus = 'Not connected';
         renderProjectUi();
       }
@@ -765,27 +570,32 @@ function installProjectUi() {
 }
 
 async function initializeRuntime() {
-  ensureLocalMigration();
-  const local = selectedLocalMeta();
+  const migrated = localStore.ensureMigration();
+  refreshLocalProjects();
+  const local = localProjects.find((item) => item.id === settings.selectedLocalProjectId) ?? migrated ?? localProjects[0];
   if (!local) return;
   settings = { ...settings, selectedLocalProjectId: local.id };
+  writeSettings();
+  const localProject = localStore.getProject(local.id) ?? readWorkingProject();
   activeProjectId = local.id;
-  const project = readLocalProject(local.id) ?? readWorkingProject();
-  saveLocalProject(local.id, project);
-  await applyWorkingProject(project, `local:${local.id}`, null);
+  mode = 'local';
+  connectionStatus = 'Local';
+  localStore.saveProject(local.id, localProject);
+  refreshLocalProjects();
+  await applyWorkingProject(localProject, `local:${local.id}`, null);
 
   if (settings.firebaseConfig) {
     try {
       await configureFirebase(settings.firebaseConfig);
-      if (settings.mode === 'online' && cloudProjects.length) {
-        const selected = settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
-          ? settings.selectedOnlineProjectId
-          : cloudProjects[0].id;
-        await switchOnlineProject(selected);
+      if (settings.mode === 'online') {
+        const selected = selectedCloudMeta();
+        if (selected) await switchOnlineProject(selected.id);
       }
     } catch {
       connectionStatus = 'Firebase unavailable';
       mode = 'local';
+      activeProjectId = local.id;
+      await applyWorkingProject(localProject, `local:${local.id}`, null);
     }
   }
   renderProjectUi();
