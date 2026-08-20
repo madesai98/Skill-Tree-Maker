@@ -1,0 +1,45 @@
+name: Temporary icon app logic patch
+on:
+  push:
+    branches: [feat/reusable-svg-icon-pool]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/reusable-svg-icon-pool
+          fetch-depth: 0
+      - name: Patch icon lifecycle and appearance logic
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/App.tsx'); t=p.read_text()
+          def r(old,new):
+            global t
+            c=t.count(old)
+            if c != 1: raise SystemExit(f'match {c}: {old[:140]!r}')
+            t=t.replace(old,new,1)
+
+          r("          name: 'New Stat',\n          type: 'number',\n          groupId,\n          groupName,\n          groupKey,\n        },", "          name: 'New Stat',\n          type: 'number',\n          iconId: null,\n          groupId,\n          groupName,\n          groupKey,\n          groupIconId: null,\n          groupColor: '#b6ff56',\n        },")
+          r("          name: 'New Stat',\n          type: 'number',\n          groupId,\n          groupName: group.groupName,\n          groupKey: group.groupKey,\n        },", "          name: 'New Stat',\n          type: 'number',\n          iconId: null,\n          groupId,\n          groupName: group.groupName,\n          groupKey: group.groupKey,\n          groupIconId: group.groupIconId,\n          groupColor: group.groupColor,\n        },")
+          r("  const updateStatGroup = (groupId: string, patch: { name?: string; key?: string }) => {", "  const updateStatGroup = (groupId: string, patch: { name?: string; key?: string; iconId?: string | null; color?: string }) => {")
+          r("          groupName: nextName,\n          groupKey: nextGroupKey,\n          key: composeStatKey(nextGroupKey, localKey),", "          groupName: nextName,\n          groupKey: nextGroupKey,\n          groupIconId: patch.iconId !== undefined ? patch.iconId : stat.groupIconId,\n          groupColor: patch.color !== undefined ? normalizeColor(patch.color, stat.groupColor) : stat.groupColor,\n          key: composeStatKey(nextGroupKey, localKey),")
+          r("      { id, key: `currency.${current.length + 1}`, name: 'New Currency', symbol: '◇' },", "      { id, key: `currency.${current.length + 1}`, name: 'New Currency', iconId: null, color: '#b6ff56' },")
+
+          r("  const exportProject = () => {", "  const parseIconFile = async (file: File) => {\n    if (file.type && file.type !== 'image/svg+xml' && !file.name.toLowerCase().endsWith('.svg')) {\n      window.alert('Choose an SVG file.');\n      return null;\n    }\n    const svg = sanitizeSvgMarkup(await file.text());\n    if (!svg) {\n      window.alert('That file is not a valid SVG, or it is larger than 256 KB.');\n      return null;\n    }\n    return svg;\n  };\n\n  const addIconAsset = async (file: File) => {\n    const svg = await parseIconFile(file);\n    if (!svg) return null;\n    const id = uid('icon');\n    setIcons((current) => [...current, { id, name: iconNameFromFile(file), svg }]);\n    showNotice('SVG added to the icon pool.');\n    return id;\n  };\n\n  const replaceIconAsset = async (iconId: string, file: File) => {\n    const svg = await parseIconFile(file);\n    if (!svg) return;\n    setIcons((current) => current.map((icon) => icon.id === iconId ? { ...icon, svg } : icon));\n    showNotice('Icon replaced everywhere it is used.');\n  };\n\n  const iconUsageCount = (iconId: string) => {\n    const groupIds = new Set<string>();\n    let count = currencies.filter((currency) => currency.iconId === iconId).length;\n    stats.forEach((stat) => {\n      if (stat.iconId === iconId) count += 1;\n      if (stat.groupIconId === iconId && !groupIds.has(stat.groupId)) {\n        groupIds.add(stat.groupId);\n        count += 1;\n      }\n    });\n    return count;\n  };\n\n  const deleteIconAsset = (iconId: string) => {\n    const usage = iconUsageCount(iconId);\n    if (usage > 0 && !window.confirm(`This icon is used by ${usage} item${usage === 1 ? '' : 's'}. Delete it and clear those icon assignments?`)) return;\n    setIcons((current) => current.filter((icon) => icon.id !== iconId));\n    setStats((current) => current.map((stat) => ({\n      ...stat,\n      iconId: stat.iconId === iconId ? null : stat.iconId,\n      groupIconId: stat.groupIconId === iconId ? null : stat.groupIconId,\n    })));\n    setCurrencies((current) => current.map((currency) => ({\n      ...currency,\n      iconId: currency.iconId === iconId ? null : currency.iconId,\n    })));\n    showNotice('Icon deleted and cleared from its assignments.');\n  };\n\n  const exportProject = () => {")
+          r("    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };", "    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };")
+          r("        setStats(project.stats);\n        setCurrencies(project.currencies);\n        setSelectedNodeId(project.nodes[0]?.id ?? null);", "        setStats(project.stats);\n        setCurrencies(project.currencies);\n        setIcons(project.icons);\n        setSelectedNodeId(project.nodes[0]?.id ?? null);")
+          p.write_text(t)
+          PY
+      - name: Commit app logic patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/App.tsx
+          git commit -m "Add reusable icon lifecycle logic"
+          git push origin HEAD:feat/reusable-svg-icon-pool
