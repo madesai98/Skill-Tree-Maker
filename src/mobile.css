@@ -1,0 +1,206 @@
+/* Responsive chrome overrides. Keep desktop layout unchanged, but switch the header
+   to two deliberate rows before the centered navigation can collide with actions. */
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-rows: 116px minmax(0, 1fr);
+  }
+
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 62px 46px;
+    align-items: center;
+    gap: 0 10px;
+    padding: 0 12px 8px;
+  }
+
+  .brand-block {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .brand-block h1 {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .eyebrow,
+  .save-status {
+    display: none;
+  }
+
+  .top-actions {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    min-width: 0;
+    gap: 5px;
+  }
+
+  .view-switcher {
+    position: static;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    left: auto;
+    top: auto;
+    bottom: auto;
+    width: 100%;
+    min-width: 0;
+    transform: none;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    background: rgba(15, 18, 24, .88);
+    box-shadow: none;
+    backdrop-filter: blur(15px);
+  }
+
+  .view-switcher button {
+    min-width: 0;
+    justify-content: center;
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  /* Runtime-injected project/history controls need to consume the same compact
+     footprint as the native import/export buttons on smaller screens. */
+  .project-manager-control,
+  .history-control {
+    flex: 0 0 auto;
+  }
+
+  .project-manager-button,
+  .history-button {
+    position: relative;
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 9px;
+    background: #12161d;
+    color: #b0b7c2;
+    display: grid !important;
+    place-items: center;
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    line-height: 1;
+  }
+
+  .project-manager-button:hover,
+  .history-button:hover {
+    background: #181d25;
+    color: #fff;
+  }
+
+  .project-manager-button::before {
+    content: '◫';
+    font-size: 17px;
+    line-height: 1;
+  }
+
+  .project-manager-button-label,
+  .history-button > span:last-child {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .project-manager-button > span:nth-of-type(2),
+  .project-manager-status {
+    display: none;
+  }
+
+  .history-button > span:first-child {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  /* Panels are fixed to the viewport on compact layouts instead of being
+     anchored to a button near the right edge, which could push them offscreen. */
+  .project-manager-panel,
+  .history-panel {
+    position: fixed;
+    top: 124px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    max-height: calc(100dvh - 136px);
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template-rows: 108px minmax(0, 1fr);
+  }
+
+  .topbar {
+    grid-template-rows: 58px 42px;
+    gap: 0 8px;
+    padding: 0 10px 8px;
+  }
+
+  .brand-mark {
+    width: 31px;
+    height: 31px;
+  }
+
+  .brand-block {
+    gap: 10px;
+  }
+
+  .brand-block h1 {
+    font-size: 13px;
+  }
+
+  .view-switcher button {
+    min-height: 34px;
+    gap: 6px;
+    padding-inline: 5px;
+    font-size: 11px;
+  }
+
+  .view-switcher button svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .project-manager-panel,
+  .history-panel {
+    top: 116px;
+    left: 10px;
+    right: 10px;
+    max-height: calc(100dvh - 126px);
+  }
+}
+
+@media (max-width: 420px) {
+  .top-actions {
+    gap: 4px;
+  }
+
+  .brand-block h1 {
+    font-size: 12px;
+  }
+
+  .view-switcher {
+    gap: 2px;
+  }
+
+  .view-switcher button {
+    gap: 5px;
+    padding-inline: 3px;
+    font-size: 10.5px;
+  }
+}
