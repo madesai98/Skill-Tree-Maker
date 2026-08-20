@@ -1,0 +1,57 @@
+name: Temporary icon app data patch
+on:
+  push:
+    branches: [feat/reusable-svg-icon-pool]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/reusable-svg-icon-pool
+          fetch-depth: 0
+      - name: Patch editor data model
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/App.tsx'); t=p.read_text()
+          def r(old,new):
+            global t
+            c=t.count(old)
+            if c != 1: raise SystemExit(f'match {c}: {old[:140]!r}')
+            t=t.replace(old,new,1)
+
+          r("import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';", "import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';\nimport { IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';")
+          r("type EditorView = 'tree' | 'stats' | 'currencies';", "type EditorView = 'tree' | 'stats' | 'currencies' | 'icons';")
+          r("type StatDefinition = {\n  id: string;\n  key: string;\n  name: string;\n  type: StatType;\n  groupId: string;\n  groupName: string;\n  groupKey: string;\n};", "type StatDefinition = {\n  id: string;\n  key: string;\n  name: string;\n  type: StatType;\n  iconId: string | null;\n  groupId: string;\n  groupName: string;\n  groupKey: string;\n  groupIconId: string | null;\n  groupColor: string;\n};")
+          r("type CurrencyDefinition = {\n  id: string;\n  key: string;\n  name: string;\n  symbol: string;\n};", "type CurrencyDefinition = {\n  id: string;\n  key: string;\n  name: string;\n  iconId: string | null;\n  color: string;\n  symbol?: string;\n};")
+          r("  stats: StatDefinition[];\n  currencies: CurrencyDefinition[];\n};", "  stats: StatDefinition[];\n  currencies: CurrencyDefinition[];\n  icons: IconAsset[];\n};")
+          r("const starterStats: StatDefinition[] = [\n  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },\n  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },\n  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower' },\n];\n\nconst starterCurrencies: CurrencyDefinition[] = [\n  { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇' },\n  { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡' },\n];", "const starterStats: StatDefinition[] = [\n  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },\n  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },\n  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },\n];\n\nconst starterCurrencies: CurrencyDefinition[] = [\n  { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇', iconId: null, color: '#b6ff56' },\n  { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡', iconId: null, color: '#7dc7ff' },\n];")
+          r("function statGameKeyFromDisplayName(name: string) {", "function normalizeColor(value: unknown, fallback = '#b6ff56') {\n  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;\n}\n\nfunction statGameKeyFromDisplayName(name: string) {")
+          r("    stats: starterStats,\n    currencies: starterCurrencies,\n  };", "    stats: starterStats,\n    currencies: starterCurrencies,\n    icons: [],\n  };")
+          r("      name: typeof value.name === 'string' ? value.name : `Stat ${index + 1}`,\n      type,\n      groupId,\n      groupName,\n      groupKey,\n    }];", "      name: typeof value.name === 'string' ? value.name : `Stat ${index + 1}`,\n      type,\n      iconId: typeof value.iconId === 'string' ? value.iconId : null,\n      groupId,\n      groupName,\n      groupKey,\n      groupIconId: typeof value.groupIconId === 'string' ? value.groupIconId : null,\n      groupColor: normalizeColor(value.groupColor),\n    }];")
+          r("      key: typeof value.key === 'string' ? value.key : `currency.${index + 1}`,\n      name: typeof value.name === 'string' ? value.name : `Currency ${index + 1}`,\n      symbol: typeof value.symbol === 'string' ? value.symbol : '◇',\n    }];", "      key: typeof value.key === 'string' ? value.key : `currency.${index + 1}`,\n      name: typeof value.name === 'string' ? value.name : `Currency ${index + 1}`,\n      iconId: typeof value.iconId === 'string' ? value.iconId : null,\n      color: normalizeColor(value.color),\n      ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),\n    }];")
+          r("function migrateProject(raw: unknown): PersistedProject | null {", "function normalizeIcons(raw: unknown): IconAsset[] {\n  if (!Array.isArray(raw)) return [];\n  return raw.flatMap((item, index) => {\n    if (!item || typeof item !== 'object') return [];\n    const value = item as Record<string, unknown>;\n    const svg = typeof value.svg === 'string' ? sanitizeSvgMarkup(value.svg) : null;\n    if (!svg) return [];\n    return [{\n      id: typeof value.id === 'string' && value.id ? value.id : `icon-import-${index}`,\n      name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : `Icon ${index + 1}`,\n      svg,\n    }];\n  });\n}\n\nfunction migrateProject(raw: unknown): PersistedProject | null {")
+          r("  const stats = normalizeStats(value.stats);\n  const currencies = value.version === 2 && Array.isArray(value.currencies)\n    ? normalizeCurrencies(value.currencies)\n    : starterCurrencies;", "  const icons = normalizeIcons(value.icons);\n  const iconIds = new Set(icons.map((icon) => icon.id));\n  const stats = normalizeStats(value.stats).map((stat) => ({\n    ...stat,\n    iconId: stat.iconId && iconIds.has(stat.iconId) ? stat.iconId : null,\n    groupIconId: stat.groupIconId && iconIds.has(stat.groupIconId) ? stat.groupIconId : null,\n  }));\n  const currencies = (value.version === 2 && Array.isArray(value.currencies)\n    ? normalizeCurrencies(value.currencies)\n    : starterCurrencies).map((currency) => ({\n      ...currency,\n      iconId: currency.iconId && iconIds.has(currency.iconId) ? currency.iconId : null,\n    }));")
+          r("    stats,\n    currencies,\n  };", "    stats,\n    currencies,\n    icons,\n  };")
+          r("function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'nodeName' | 'nodeStats' }) {", "function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {")
+          r("    currency: <><path d=\"M12 3 20 8l-8 13L4 8l8-5Z\" /><path d=\"M4 8h16\" /></>,\n    close:", "    currency: <><path d=\"M12 3 20 8l-8 13L4 8l8-5Z\" /><path d=\"M4 8h16\" /></>,\n    icons: <><path d=\"m12 3 7 4-7 4-7-4 7-4Z\" /><path d=\"m5 12 7 4 7-4M5 17l7 4 7-4\" /></>,\n    close:")
+          r("  const [stats, setStats] = useState<StatDefinition[]>(initial.stats);\n  const [currencies, setCurrencies] = useState<CurrencyDefinition[]>(initial.currencies);\n  const [activeView, setActiveView] = useState<EditorView>('tree');", "  const [stats, setStats] = useState<StatDefinition[]>(initial.stats);\n  const [currencies, setCurrencies] = useState<CurrencyDefinition[]>(initial.currencies);\n  const [icons, setIcons] = useState<IconAsset[]>(initial.icons);\n  const [activeView, setActiveView] = useState<EditorView>('tree');")
+          r("    const groups = new Map<string, { id: string; name: string; key: string; stats: StatDefinition[] }>();", "    const groups = new Map<string, { id: string; name: string; key: string; iconId: string | null; color: string; stats: StatDefinition[] }>();")
+          r("      groups.set(stat.groupId, { id: stat.groupId, name: stat.groupName, key: stat.groupKey, stats: [stat] });", "      groups.set(stat.groupId, { id: stat.groupId, name: stat.groupName, key: stat.groupKey, iconId: stat.groupIconId, color: stat.groupColor, stats: [stat] });")
+          r("      if (touched.has('currencies')) {\n        setCurrencies((current) => applyHistoryTransitionsToCollection(current, 'currencies', detail.transitions));\n      }", "      if (touched.has('currencies')) {\n        setCurrencies((current) => applyHistoryTransitionsToCollection(current, 'currencies', detail.transitions));\n      }\n      if (touched.has('icons')) {\n        setIcons((current) => applyHistoryTransitionsToCollection(current, 'icons', detail.transitions));\n      }")
+          r("    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };\n    recordHistoryProject(project);", "    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };\n    recordHistoryProject(project);")
+          r("  }, [nodes, edges, stats, currencies]);", "  }, [nodes, edges, stats, currencies, icons]);")
+          p.write_text(t)
+          PY
+      - name: Commit app data patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/App.tsx
+          git commit -m "Add icon metadata to editor project data"
+          git push origin HEAD:feat/reusable-svg-icon-pool
