@@ -538,6 +538,7 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
           style={{ left: `${label.left}px`, top: `${label.top}px`, width: `${label.width}px`, textAlign: label.align }}
           aria-hidden="true"
         >
+          {label.currency && <div className="skill-node-label-currency">{label.currency}</div>}
           {label.name && <div className="skill-node-label-name">{label.name}</div>}
           {label.effects.length > 0 && (
             <div className="skill-node-label-effects">
@@ -595,6 +596,7 @@ function SkillTreeEditor() {
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<SkillFlowNode, SkillLinkEdge> | null>(null);
   const [savedAt, setSavedAt] = useState('Saved');
   const [connectionChoice, setConnectionChoice] = useState('');
+  const [showNodeCurrency, setShowNodeCurrency] = useState(true);
   const [showNodeNames, setShowNodeNames] = useState(true);
   const [showNodeStats, setShowNodeStats] = useState(true);
   const [gesture, setGesture] = useState<GestureState | null>(null);
@@ -1238,26 +1240,31 @@ function SkillTreeEditor() {
 
   const nodeLabels = useMemo(() => {
     const statMap = new Map(stats.map((stat) => [stat.id, stat]));
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
     return buildNodeLabelLayout(
-      nodes.map((node) => ({
-        id: node.id,
-        position: node.position,
-        name: node.data.name,
-        effects: node.data.upgrades.flatMap((upgrade) => {
-          const stat = statMap.get(upgrade.statId);
-          if (!stat) return [];
-          return [{
-            operator: upgrade.operator,
-            value: upgrade.value,
-            groupName: stat.groupName,
-            statName: stat.name,
-          }];
-        }),
-      })),
+      nodes.map((node) => {
+        const currency = currencyMap.get(node.data.cost.currencyId);
+        return {
+          id: node.id,
+          position: node.position,
+          name: node.data.name,
+          currency: currency ? { symbol: currency.symbol, amount: node.data.cost.amount } : null,
+          effects: node.data.upgrades.flatMap((upgrade) => {
+            const stat = statMap.get(upgrade.statId);
+            if (!stat) return [];
+            return [{
+              operator: upgrade.operator,
+              value: upgrade.value,
+              groupName: stat.groupName,
+              statName: stat.name,
+            }];
+          }),
+        };
+      }),
       edges,
-      { showNames: showNodeNames, showStats: showNodeStats },
+      { showCurrency: showNodeCurrency, showNames: showNodeNames, showStats: showNodeStats },
     );
-  }, [edges, nodes, showNodeNames, showNodeStats, stats]);
+  }, [currencies, edges, nodes, showNodeCurrency, showNodeNames, showNodeStats, stats]);
 
   const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
     const nodeMap = new Map<string, SkillFlowNode>(nodes.map((node): [string, SkillFlowNode] => [node.id, node]));
@@ -1328,6 +1335,16 @@ function SkillTreeEditor() {
             </div>
 
             <div className="canvas-display-toolbar" aria-label="Node display options">
+              <button
+                className={`canvas-icon-toggle${showNodeCurrency ? ' is-active' : ''}`}
+                type="button"
+                aria-label="Toggle node currency costs"
+                aria-pressed={showNodeCurrency}
+                title="Toggle node currency costs"
+                onClick={() => setShowNodeCurrency((current) => !current)}
+              >
+                <Icon name="currency" />
+              </button>
               <button
                 className={`canvas-icon-toggle${showNodeNames ? ' is-active' : ''}`}
                 type="button"
