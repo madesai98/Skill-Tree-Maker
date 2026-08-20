@@ -1,0 +1,36 @@
+name: Temporary fix stat group compatibility
+run-name: Finalize grouped stat pool compatibility
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feat/stat-pool-groups'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply compatibility fix
+        run: python scripts/fix-stat-group-history.py
+
+      - name: Remove temporary scaffolding
+        run: rm -f scripts/apply-stat-groups.py scripts/fix-stat-group-history.py .github/workflows/temp-fix-stat-group-history.yml
+
+      - name: Commit finalized implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/App.tsx scripts/apply-stat-groups.py scripts/fix-stat-group-history.py .github/workflows/temp-fix-stat-group-history.yml
+          git commit -m "Finalize grouped stat pool compatibility"
+          git push origin HEAD:${{ github.head_ref }}
