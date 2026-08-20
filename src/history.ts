@@ -73,6 +73,7 @@ const nativeRemoveItem = Storage.prototype.removeItem;
 let historyScope = 'legacy';
 let historyState: HistoryState = { entries: [], cursor: -1 };
 let lastProject: CanonicalProject | null = null;
+let latestEditorProject: CanonicalProject | null = null;
 let onlineController: OnlineHistoryController | null = null;
 let historyWriteChain: Promise<void> = Promise.resolve();
 let externalRecording = false;
@@ -229,6 +230,7 @@ function appendChanges(changes: AtomicHistoryChange[], collaboration?: Collabora
 function recordProject(raw: string) {
   const next = normalizeProject(raw);
   if (!next) return;
+  latestEditorProject = cloneValue(next);
   if (!lastProject) {
     lastProject = next;
     return;
@@ -260,7 +262,7 @@ export function setHistoryExternalRecording(enabled: boolean) {
 }
 
 export function getHistoryProject() {
-  return lastProject ? cloneValue(lastProject) : null;
+  return latestEditorProject ? cloneValue(latestEditorProject) : null;
 }
 
 export function recordCommittedHistory(before: CanonicalProject, after: CanonicalProject, collaboration: CollaborationHistoryMeta) {
@@ -272,6 +274,7 @@ export async function setHistoryScope(scope: string, project: CanonicalProject, 
   historyScope = scope;
   onlineController = controller;
   lastProject = cloneValue(project);
+  latestEditorProject = cloneValue(project);
   pendingDragProject = null;
   historyState = controller ? normalizeHistoryState(await controller.load()) : readLocalHistory();
   renderPanel();
@@ -463,6 +466,7 @@ function installHistoryUi() {
 nativeRemoveItem.call(localStorage, LEGACY_HISTORY_STORAGE_KEY);
 const initialRaw = localStorage.getItem(PROJECT_STORAGE_KEY);
 lastProject = initialRaw ? normalizeProject(initialRaw) : null;
+latestEditorProject = lastProject ? cloneValue(lastProject) : null;
 historyState = readLocalHistory();
 
 if (!installHistoryUi()) {
