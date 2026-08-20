@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 export type IconAsset = {
   id: string;
@@ -83,23 +83,116 @@ type IconPickerProps = {
 
 export function IconPicker({ icons, value, onChange, onUpload, compact = false, ariaLabel = 'Icon' }: IconPickerProps) {
   const selected = icons.find((icon) => icon.id === value) ?? null;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const filteredIcons = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    if (!search) return icons;
+    return icons.filter((icon) => icon.name.toLowerCase().includes(search));
+  }, [icons, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    window.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      window.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [open]);
+
+  const closePicker = () => {
+    setOpen(false);
+    setQuery('');
+  };
+
+  const chooseIcon = (iconId: string | null) => {
+    onChange(iconId);
+    closePicker();
+  };
+
   const onFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (file) void onUpload(file);
+    if (!file) return;
+    closePicker();
+    void onUpload(file);
   };
 
   return (
-    <div className={`icon-picker${compact ? ' compact' : ''}`}>
-      <SvgAssetPreview icon={selected} />
-      <select aria-label={ariaLabel} value={selected?.id ?? ''} onChange={(event) => onChange(event.target.value || null)}>
-        <option value="">No icon</option>
-        {icons.map((icon) => <option key={icon.id} value={icon.id}>{icon.name}</option>)}
-      </select>
-      <label className="icon-upload-control" title="Upload SVG">
-        <span>{compact ? '+' : 'Upload SVG'}</span>
-        <input type="file" accept=".svg,image/svg+xml" onChange={onFile} hidden />
-      </label>
+    <div ref={rootRef} className={`icon-picker${compact ? ' compact' : ''}${open ? ' is-open' : ''}`}>
+      <button
+        type="button"
+        className="icon-picker-trigger"
+        aria-label={ariaLabel}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={selected?.name ?? 'No icon'}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <SvgAssetPreview icon={selected} />
+      </button>
+
+      {open && (
+        <div className="icon-picker-dropdown" role="dialog" aria-label={`${ariaLabel} picker`}>
+          <div className="icon-picker-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>
+            <input
+              autoFocus
+              type="search"
+              value={query}
+              placeholder="Search icons…"
+              aria-label="Search icon pool"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <div className="icon-picker-grid" aria-label="Icon pool">
+            <button
+              type="button"
+              className="icon-picker-option icon-picker-add"
+              aria-label="Upload new SVG"
+              title="Upload new SVG"
+              onClick={() => fileRef.current?.click()}
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+            <button
+              type="button"
+              className={`icon-picker-option icon-picker-clear${value ? '' : ' is-selected'}`}
+              aria-label="Clear icon"
+              aria-pressed={!value}
+              title="No icon"
+              onClick={() => chooseIcon(null)}
+            >
+              <SvgAssetPreview icon={null} />
+            </button>
+            {filteredIcons.map((icon) => (
+              <button
+                type="button"
+                className={`icon-picker-option${icon.id === value ? ' is-selected' : ''}`}
+                key={icon.id}
+                aria-label={icon.name}
+                aria-pressed={icon.id === value}
+                title={icon.name}
+                onClick={() => chooseIcon(icon.id)}
+              >
+                <SvgAssetPreview icon={icon} />
+              </button>
+            ))}
+          </div>
+          {filteredIcons.length === 0 && query.trim() && <div className="icon-picker-empty">No matching icons.</div>}
+        </div>
+      )}
+
+      <input ref={fileRef} type="file" accept=".svg,image/svg+xml" onChange={onFile} hidden />
     </div>
   );
 }
