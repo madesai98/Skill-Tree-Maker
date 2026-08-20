@@ -29,7 +29,7 @@ document.addEventListener('input', (event) => {
     if (!nameInput.isConnected || !keyInput.isConnected) return;
     const renderedPrefix = row.querySelector<HTMLElement>('.stat-key-prefix')?.textContent ?? '';
     let nextKey = statGameKeyFromDisplayName(nameInput.value);
-    if (renderedPrefix && nextKey.startsWith(renderedPrefix)) {
+    if (renderedPrefix && nextKey.toLowerCase().startsWith(renderedPrefix.toLowerCase())) {
       nextKey = nextKey.slice(renderedPrefix.length);
     }
     if (keyInput.value === nextKey) return;
