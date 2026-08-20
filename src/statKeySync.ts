@@ -27,7 +27,11 @@ document.addEventListener('input', (event) => {
   // React to restore the display-name value and make keystrokes appear lost.
   queueMicrotask(() => {
     if (!nameInput.isConnected || !keyInput.isConnected) return;
-    const nextKey = statGameKeyFromDisplayName(nameInput.value);
+    const renderedPrefix = row.querySelector<HTMLElement>('.stat-key-prefix')?.textContent ?? '';
+    let nextKey = statGameKeyFromDisplayName(nameInput.value);
+    if (renderedPrefix && nextKey.startsWith(renderedPrefix)) {
+      nextKey = nextKey.slice(renderedPrefix.length);
+    }
     if (keyInput.value === nextKey) return;
     setInputValue(keyInput, nextKey);
   });
