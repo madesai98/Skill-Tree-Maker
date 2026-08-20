@@ -1,0 +1,32 @@
+name: Temporary Iconify dedupe patch
+on:
+  push:
+    branches: [feat/iconify-icon-search]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/iconify-icon-search
+      - name: Patch duplicate import guard
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/App.tsx')
+          text = path.read_text()
+          old = """  const addIconifyAsset = async (iconName: string, svg: string) => {\n    let added = false;\n    setIcons((current) => {\n      if (current.some((icon) => icon.name === iconName)) return current;\n      added = true;\n      return [...current, { id: uid('icon'), name: iconName, svg }];\n    });\n    if (added) showNotice(`${iconName} added from Iconify.`);\n  };"""
+          new = """  const addIconifyAsset = async (iconName: string, svg: string) => {\n    if (icons.some((icon) => icon.name === iconName)) return;\n    setIcons((current) => current.some((icon) => icon.name === iconName)\n      ? current\n      : [...current, { id: uid('icon'), name: iconName, svg }]);\n    showNotice(`${iconName} added from Iconify.`);\n  };"""
+          if text.count(old) != 1:
+              raise SystemExit('Expected Iconify import handler exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- src/App.tsx
+          git commit -m "Harden Iconify duplicate import guard"
+          git push origin HEAD:feat/iconify-icon-search
