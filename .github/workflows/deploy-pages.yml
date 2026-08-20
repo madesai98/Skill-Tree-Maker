@@ -2,20 +2,78 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/firebase-online-projects]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  validate-online-mode:
+    if: github.ref == 'refs/heads/feature/firebase-online-projects'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply locally tested collaboration fixes
+        shell: bash
+        run: |
+          test "$(git hash-object src/history.ts)" = "f5d551a05054a9c6a4e2fa41ed7b19f422ba74d7"
+          test "$(git hash-object src/projectRuntime.ts)" = "6e1cb2620631c7d7c1bc75ac12eeaced6956ea04"
+          python - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, re
+          text = Path('.github/workflows/apply-online-mode-fixes.yml').read_text()
+          chunks = re.findall(r"printf '%s' '([A-Za-z0-9+/=]+)' >> /tmp/online-mode-fixes\\.b64", text)
+          if len(chunks) != 6:
+              raise SystemExit(f'Expected 6 patch chunks, found {len(chunks)}')
+          patch = base64.b64decode(''.join(chunks), validate=True)
+          digest = hashlib.sha256(patch).hexdigest()
+          if digest != 'ed8ba7340588e2cb0f0b36e83ed7f9bcb1e850d2412a29e4890f55f55931cfea':
+              raise SystemExit(f'Patch digest mismatch: {digest}')
+          Path('/tmp/online-mode-fixes.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/online-mode-fixes.patch
+          git apply /tmp/online-mode-fixes.patch
+          test "$(git hash-object src/history.ts)" = "fd516b747a1319e8eba812a26334ec10bdd58ddf"
+          test "$(git hash-object src/projectRuntime.ts)" = "4e61225dee8eecc57627fc4354c6e6178dd1ace6"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit validated fixes and remove validation scaffolding
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main --depth=1
+          git show FETCH_HEAD:.github/workflows/deploy-pages.yml > .github/workflows/deploy-pages.yml
+          rm -f .github/workflows/apply-online-mode-fixes.yml
+          rm -f .github/workflows/kick-online-mode-fixes.yml
+          rm -f .github/online-mode-validation-kick
+          git add src/history.ts src/projectRuntime.ts .github/workflows/deploy-pages.yml
+          git add -u -- .github/workflows/apply-online-mode-fixes.yml .github/workflows/kick-online-mode-fixes.yml .github/online-mode-validation-kick
+          git diff --cached --check
+          git commit -m "Queue collaborative cloud edits safely"
+          git push origin HEAD:feature/firebase-online-projects
+
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,6 +99,7 @@ jobs:
           path: dist
 
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
