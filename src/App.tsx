@@ -627,7 +627,9 @@ function SkillTreeEditor() {
         setEdges((current) => applyHistoryTransitionsToCollection(current, 'edges', detail.transitions));
       }
       if (touched.has('stats')) {
-        setStats((current) => applyHistoryTransitionsToCollection(current, 'stats', detail.transitions));
+        setStats((current) => normalizeStats(
+          applyHistoryTransitionsToCollection(current, 'stats', detail.transitions),
+        ));
       }
       if (touched.has('currencies')) {
         setCurrencies((current) => applyHistoryTransitionsToCollection(current, 'currencies', detail.transitions));
