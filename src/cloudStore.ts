@@ -176,7 +176,12 @@ export class FirestoreProjectStore {
     if (existing) await deleteApp(existing);
     this.app = initializeApp(config, FIREBASE_APP_NAME);
     this.db = getFirestore(this.app);
-    await this.listProjects();
+    try {
+      await this.listProjects();
+    } catch (error) {
+      await this.disconnect();
+      throw error;
+    }
   }
 
   async disconnect() {
