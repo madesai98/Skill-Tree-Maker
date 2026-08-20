@@ -61,7 +61,9 @@ Cloud data is stored under the top-level `skillTreeMakerProjects` collection. Ea
 skillTreeMakerProjects/<projectId>/histories/<localUserUuid>
 ```
 
-Collaborative writes use Firestore transactions. Each atomic field has last-writer metadata, and structurally sensitive entities also have mutation ownership metadata. Undo/redo checks that metadata before committing. For example, if one user creates a skill and another user later edits or connects that skill, the creator's older "add skill" action can no longer be undone in a way that deletes the collaborator's newer work.
+Collaborative writes use Firestore transactions. Atomic fields track their latest mutation writer, while structurally sensitive entities maintain per-user monotonic touch counters. Undo/redo validates those guards before committing. For example, if one user creates a skill and another user later edits or connects that skill, the creator's older "add skill" action can no longer be undone in a way that deletes the collaborator's newer work.
+
+Rapid edits made while an earlier cloud transaction is still in flight are queued and rebased onto the newest committed cloud state. Unrelated collaborator changes are preserved; overlapping field edits or structurally unsafe rebases are rejected as conflicts. Realtime snapshots that arrive during the editor's short autosave debounce are held until the pending local state is transactionally reconciled, so a just-entered local edit is not silently replaced before it can be checked for conflicts.
 
 Remote Firestore snapshots update the editor state but do not create history entries for the receiving user. A user's History panel therefore contains only that user's own cloud actions for the selected project.
 
