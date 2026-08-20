@@ -6,6 +6,7 @@ export type CanonicalProject = {
   edges: JsonRecord[];
   stats: JsonRecord[];
   currencies: JsonRecord[];
+  icons: JsonRecord[];
 };
 
 export type AtomicHistoryChange = {
@@ -77,6 +78,9 @@ export function normalizeProject(raw: unknown): CanonicalProject | null {
       currencies: Array.isArray(parsed.currencies)
         ? parsed.currencies.filter(isRecord).map((item) => cloneValue(item))
         : [],
+      icons: Array.isArray(parsed.icons)
+        ? parsed.icons.filter(isRecord).map((item) => cloneValue(item))
+        : [],
     };
   } catch {
     return null;
@@ -140,9 +144,10 @@ export function createStarterProject(): CanonicalProject {
       { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean' },
     ],
     currencies: [
-      { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇' },
-      { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡' },
+      { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇', iconId: null, color: '#b6ff56' },
+      { id: 'currency-cores', key: 'currency.cores', name: 'Tower Cores', symbol: '⬡', iconId: null, color: '#7dc7ff' },
     ],
+    icons: [],
   };
 }
 
@@ -154,6 +159,7 @@ export function createBlankProject(seed?: CanonicalProject | null): CanonicalPro
     edges: [],
     stats: cloneValue(basis.stats),
     currencies: cloneValue(basis.currencies),
+    icons: cloneValue(basis.icons),
   };
 }
 
@@ -250,6 +256,7 @@ export function diffProjects(before: CanonicalProject, after: CanonicalProject) 
   diffValue(before.edges, after.edges, ['edges'], changes);
   diffValue(before.stats, after.stats, ['stats'], changes);
   diffValue(before.currencies, after.currencies, ['currencies'], changes);
+  diffValue(before.icons, after.icons, ['icons'], changes);
   return changes;
 }
 
@@ -319,7 +326,7 @@ export function sourceSideForDirection(change: AtomicHistoryChange, direction: H
 
 export function applyHistoryTransitionsToCollection<T>(
   current: T[],
-  collection: 'nodes' | 'edges' | 'stats' | 'currencies',
+  collection: 'nodes' | 'edges' | 'stats' | 'currencies' | 'icons',
   transitions: HistoryTransition[],
 ): T[] {
   let next: unknown = current;
@@ -388,7 +395,9 @@ function entityKey(collection: string, id: string) {
         ? 'stat'
         : collection === 'currencies'
           ? 'currency'
-          : collection;
+          : collection === 'icons'
+            ? 'icon'
+            : collection;
   return `${singular}:${id}`;
 }
 
@@ -423,7 +432,7 @@ export function touchedEntityKeys(before: CanonicalProject, after: CanonicalProj
   changes.forEach((change) => {
     const [collection, id, ...path] = change.key;
     if (!collection || !id) return;
-    if (['nodes', 'edges', 'stats', 'currencies'].includes(collection)) touched.add(entityKey(collection, id));
+    if (['nodes', 'edges', 'stats', 'currencies', 'icons'].includes(collection)) touched.add(entityKey(collection, id));
 
     if (collection === 'edges') {
       const oldEdge = collectionEntity(before, 'edges', id);
