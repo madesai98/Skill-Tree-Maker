@@ -3,13 +3,12 @@ import { parseFirebaseConfigInput } from './firebaseConfig';
 const CONFIG_SECTION_SELECTOR = '.project-manager-config';
 const CONFIG_TEXTAREA_SELECTOR = `${CONFIG_SECTION_SELECTOR} textarea`;
 const CONNECT_ACTION_SELECTOR = '[data-project-action="connect"]';
+const CONFIG_HINT = 'Paste the Firebase web config exactly as Firebase gives it to you — the full const firebaseConfig snippet, object literal, or JSON all work.';
 
 function prepareConfigInput() {
   document.querySelectorAll<HTMLElement>(CONFIG_SECTION_SELECTOR).forEach((section) => {
     const hint = section.querySelector<HTMLElement>('small');
-    if (hint) {
-      hint.textContent = 'Paste the Firebase web config exactly as Firebase gives it to you — the full const firebaseConfig snippet, object literal, or JSON all work.';
-    }
+    if (hint && hint.textContent !== CONFIG_HINT) hint.textContent = CONFIG_HINT;
 
     const textarea = section.querySelector<HTMLTextAreaElement>('textarea');
     if (!textarea) return;
