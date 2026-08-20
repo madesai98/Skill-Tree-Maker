@@ -1,319 +1,118 @@
-type JsonRecord = Record<string, unknown>;
+import {
+  applyHistoryTransitionsToCollection,
+  applyTransitionsToProject,
+  changePathId,
+  cloneValue,
+  diffProjects,
+  normalizeProject,
+  sameValue,
+} from './projectData';
+import type {
+  AtomicHistoryChange,
+  CanonicalProject,
+  HistoryDirection,
+  HistoryTransition,
+} from './projectData';
 
-type CanonicalProject = {
-  version: 2;
-  nodes: JsonRecord[];
-  edges: JsonRecord[];
-  stats: JsonRecord[];
-  currencies: JsonRecord[];
-};
-
-export type AtomicHistoryChange = {
-  key: string[];
-  oldExists: boolean;
-  oldValue: unknown;
-  newExists: boolean;
-  newValue: unknown;
-  oldIndex?: number;
-  newIndex?: number;
-};
-
-export type HistoryDirection = 'undo' | 'redo';
-
-export type HistoryTransition = {
-  direction: HistoryDirection;
-  changes: AtomicHistoryChange[];
-};
+export type { AtomicHistoryChange, HistoryDirection, HistoryTransition } from './projectData';
+export { applyHistoryTransitionsToCollection } from './projectData';
 
 export type HistoryApplyDetail = {
   transitions: HistoryTransition[];
 };
 
-type HistoryEntry = {
+export type HistoryEntry = {
   id: string;
   timestamp: number;
   label: string;
   changes: AtomicHistoryChange[];
+  mutationId?: string;
+  status?: 'applied' | 'undone' | 'conflicted';
+  conflictReason?: string;
 };
 
-type HistoryState = {
+export type HistoryState = {
   entries: HistoryEntry[];
   cursor: number;
 };
 
+export type OnlineHistoryResult = {
+  ok: boolean;
+  project?: CanonicalProject;
+  mutationId?: string;
+  reason?: string;
+};
+
+export type OnlineHistoryController = {
+  load: () => Promise<HistoryState>;
+  save: (state: HistoryState) => Promise<void>;
+  apply: (direction: HistoryDirection, entry: HistoryEntry) => Promise<OnlineHistoryResult>;
+};
+
 const PROJECT_STORAGE_KEY = 'incremental-td-skill-tree:v2';
 const LEGACY_HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v1';
-const HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v2';
+const HISTORY_PREFIX = 'incremental-td-skill-tree:history:v3:';
 const HISTORY_LIMIT = 50;
 const COALESCE_WINDOW_MS = 600;
 const DRAG_FLUSH_DELAY_MS = 50;
 export const HISTORY_APPLY_EVENT = 'skill-tree-history-apply';
+export const PROJECT_SAVED_EVENT = 'skill-tree-project-saved';
 
 const nativeSetItem = Storage.prototype.setItem;
 const nativeRemoveItem = Storage.prototype.removeItem;
 
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
+let historyScope = 'legacy';
+let historyState: HistoryState = { entries: [], cursor: -1 };
+let panelOpen = false;
+let nodeDragActive = false;
+let pendingDragProject: CanonicalProject | null = null;
+let dragFlushTimer: number | null = null;
+let lastProject: CanonicalProject | null = null;
+let externalRecording = false;
+let onlineController: OnlineHistoryController | null = null;
+let applyingHistory = false;
 
-function cloneValue<T>(value: T): T {
-  if (value === undefined) return value;
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function normalizeProject(raw: string): CanonicalProject | null {
-  try {
-    const value = JSON.parse(raw) as JsonRecord;
-    if (!Array.isArray(value.nodes) || !Array.isArray(value.edges) || !Array.isArray(value.stats)) return null;
-
-    const nodes = value.nodes.flatMap<JsonRecord>((item) => {
-      if (!isRecord(item) || typeof item.id !== 'string') return [];
-      return [{
-        id: item.id,
-        type: item.type ?? 'skill',
-        position: cloneValue(item.position),
-        data: cloneValue(item.data),
-      }];
-    });
-
-    const edges = value.edges.flatMap<JsonRecord>((item) => {
-      if (!isRecord(item) || typeof item.id !== 'string') return [];
-      return [{
-        id: item.id,
-        source: item.source,
-        target: item.target,
-        type: item.type ?? 'skillLink',
-      }];
-    });
-
-    return {
-      version: 2,
-      nodes,
-      edges,
-      stats: value.stats.filter(isRecord).map((item) => cloneValue(item)),
-      currencies: Array.isArray(value.currencies)
-        ? value.currencies.filter(isRecord).map((item) => cloneValue(item))
-        : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function sameValue(left: unknown, right: unknown) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function arraysUseIds(before: unknown[], after: unknown[]) {
-  const combined = [...before, ...after];
-  return combined.length > 0 && combined.every((item) => isRecord(item) && typeof item.id === 'string');
-}
-
-function pushChange(
-  changes: AtomicHistoryChange[],
-  key: string[],
-  oldExists: boolean,
-  oldValue: unknown,
-  newExists: boolean,
-  newValue: unknown,
-  oldIndex?: number,
-  newIndex?: number,
-) {
-  changes.push({
-    key,
-    oldExists,
-    oldValue: oldExists ? cloneValue(oldValue) : null,
-    newExists,
-    newValue: newExists ? cloneValue(newValue) : null,
-    ...(oldIndex === undefined ? {} : { oldIndex }),
-    ...(newIndex === undefined ? {} : { newIndex }),
-  });
-}
-
-function diffValue(
-  oldValue: unknown,
-  newValue: unknown,
-  key: string[],
-  changes: AtomicHistoryChange[],
-  oldExists = true,
-  newExists = true,
-) {
-  if (!oldExists || !newExists) {
-    pushChange(changes, key, oldExists, oldValue, newExists, newValue);
-    return;
-  }
-
-  if (sameValue(oldValue, newValue)) return;
-
-  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
-    if (!arraysUseIds(oldValue, newValue)) {
-      pushChange(changes, key, true, oldValue, true, newValue);
-      return;
-    }
-
-    const oldMap = new Map<string, { value: JsonRecord; index: number }>();
-    const newMap = new Map<string, { value: JsonRecord; index: number }>();
-    oldValue.forEach((item, index) => oldMap.set(String((item as JsonRecord).id), { value: item as JsonRecord, index }));
-    newValue.forEach((item, index) => newMap.set(String((item as JsonRecord).id), { value: item as JsonRecord, index }));
-    const ids = [...oldMap.keys(), ...[...newMap.keys()].filter((id) => !oldMap.has(id))];
-
-    ids.forEach((id) => {
-      const before = oldMap.get(id);
-      const after = newMap.get(id);
-      if (!before || !after) {
-        pushChange(
-          changes,
-          [...key, id],
-          Boolean(before),
-          before?.value,
-          Boolean(after),
-          after?.value,
-          before?.index,
-          after?.index,
-        );
-        return;
-      }
-      diffValue(before.value, after.value, [...key, id], changes);
-    });
-    return;
-  }
-
-  if (isRecord(oldValue) && isRecord(newValue)) {
-    const keys = [...Object.keys(oldValue), ...Object.keys(newValue).filter((item) => !(item in oldValue))];
-    keys.forEach((property) => {
-      const beforeExists = Object.prototype.hasOwnProperty.call(oldValue, property);
-      const afterExists = Object.prototype.hasOwnProperty.call(newValue, property);
-      diffValue(oldValue[property], newValue[property], [...key, property], changes, beforeExists, afterExists);
-    });
-    return;
-  }
-
-  pushChange(changes, key, true, oldValue, true, newValue);
-}
-
-function diffProjects(before: CanonicalProject, after: CanonicalProject) {
-  const changes: AtomicHistoryChange[] = [];
-  diffValue(before.nodes, after.nodes, ['nodes'], changes);
-  diffValue(before.edges, after.edges, ['edges'], changes);
-  diffValue(before.stats, after.stats, ['stats'], changes);
-  diffValue(before.currencies, after.currencies, ['currencies'], changes);
-  return changes;
-}
-
-function applyAtKey(
-  current: unknown,
-  key: string[],
-  exists: boolean,
-  value: unknown,
-  index?: number,
-): unknown {
-  if (key.length === 0) return exists ? cloneValue(value) : undefined;
-
-  const [segment, ...rest] = key;
-
-  if (Array.isArray(current)) {
-    const itemIndex = current.findIndex((item) => isRecord(item) && item.id === segment);
-
-    if (rest.length === 0) {
-      const next = [...current];
-      if (!exists) {
-        if (itemIndex >= 0) next.splice(itemIndex, 1);
-        return next;
-      }
-
-      const nextValue = cloneValue(value);
-      if (itemIndex >= 0) {
-        next[itemIndex] = nextValue;
-      } else {
-        const insertIndex = Math.max(0, Math.min(index ?? next.length, next.length));
-        next.splice(insertIndex, 0, nextValue);
-      }
-      return next;
-    }
-
-    if (itemIndex < 0) return current;
-    const next = [...current];
-    next[itemIndex] = applyAtKey(next[itemIndex], rest, exists, value, index);
-    return next;
-  }
-
-  if (isRecord(current)) {
-    const next = { ...current };
-    if (rest.length === 0) {
-      if (exists) next[segment] = cloneValue(value);
-      else delete next[segment];
-      return next;
-    }
-
-    next[segment] = applyAtKey(next[segment], rest, exists, value, index);
-    return next;
-  }
-
-  return current;
-}
-
-function targetSide(change: AtomicHistoryChange, direction: HistoryDirection) {
-  return direction === 'undo'
-    ? { exists: change.oldExists, value: change.oldValue, index: change.oldIndex }
-    : { exists: change.newExists, value: change.newValue, index: change.newIndex };
-}
-
-export function applyHistoryTransitionsToCollection<T>(
-  current: T[],
-  collection: 'nodes' | 'edges' | 'stats' | 'currencies',
-  transitions: HistoryTransition[],
-): T[] {
-  let next: unknown = current;
-
-  transitions.forEach((transition) => {
-    const relevant = transition.changes.filter((change) => change.key[0] === collection);
-    const ordered = transition.direction === 'undo' ? [...relevant].reverse() : relevant;
-    ordered.forEach((change) => {
-      const side = targetSide(change, transition.direction);
-      next = applyAtKey(next, change.key.slice(1), side.exists, side.value, side.index);
-    });
-  });
-
-  return next as T[];
-}
-
-function applyTransitionsToProject(project: CanonicalProject, transitions: HistoryTransition[]) {
-  let next: unknown = project;
-
-  transitions.forEach((transition) => {
-    const ordered = transition.direction === 'undo' ? [...transition.changes].reverse() : transition.changes;
-    ordered.forEach((change) => {
-      const side = targetSide(change, transition.direction);
-      next = applyAtKey(next, change.key, side.exists, side.value, side.index);
-    });
-  });
-
-  return next as CanonicalProject;
+function historyStorageKey() {
+  return `${HISTORY_PREFIX}${historyScope}`;
 }
 
 function validChange(value: unknown): value is AtomicHistoryChange {
-  if (!isRecord(value) || !Array.isArray(value.key) || !value.key.every((part) => typeof part === 'string')) return false;
-  return typeof value.oldExists === 'boolean' && typeof value.newExists === 'boolean';
+  if (!value || typeof value !== 'object') return false;
+  const change = value as Record<string, unknown>;
+  if (!Array.isArray(change.key) || !change.key.every((part) => typeof part === 'string')) return false;
+  return typeof change.oldExists === 'boolean' && typeof change.newExists === 'boolean';
 }
 
-function readHistory(): HistoryState {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) ?? '') as HistoryState;
-    if (!Array.isArray(parsed.entries) || typeof parsed.cursor !== 'number') throw new Error('Invalid history');
+function normalizeHistoryState(raw: unknown): HistoryState {
+  if (!raw || typeof raw !== 'object') return { entries: [], cursor: -1 };
+  const parsed = raw as Partial<HistoryState>;
+  if (!Array.isArray(parsed.entries) || typeof parsed.cursor !== 'number') return { entries: [], cursor: -1 };
+  const entries = parsed.entries
+    .filter((entry): entry is HistoryEntry => Boolean(entry)
+      && Array.isArray(entry.changes)
+      && entry.changes.every(validChange))
+    .slice(-HISTORY_LIMIT);
+  const removedCount = Math.max(0, parsed.entries.length - entries.length);
+  return {
+    entries,
+    cursor: Math.max(-1, Math.min(parsed.cursor - removedCount, entries.length - 1)),
+  };
+}
 
-    const entries = parsed.entries
-      .filter((entry) => entry && Array.isArray(entry.changes) && entry.changes.every(validChange))
-      .slice(-HISTORY_LIMIT);
-    const removedCount = Math.max(0, parsed.entries.length - entries.length);
-    const cursor = Math.max(-1, Math.min(parsed.cursor - removedCount, entries.length - 1));
-    return { entries, cursor };
+function readLocalHistory() {
+  try {
+    return normalizeHistoryState(JSON.parse(localStorage.getItem(historyStorageKey()) ?? ''));
   } catch {
     return { entries: [], cursor: -1 };
   }
 }
 
-function writeHistory(state: HistoryState) {
-  nativeSetItem.call(localStorage, HISTORY_STORAGE_KEY, JSON.stringify(state));
+async function writeHistory(state: HistoryState) {
+  if (onlineController) {
+    await onlineController.save(state);
+  } else {
+    nativeSetItem.call(localStorage, historyStorageKey(), JSON.stringify(state));
+  }
 }
 
 function formatKey(key: string[]) {
@@ -351,15 +150,11 @@ function historyId() {
   return `history-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function changeIdentity(change: AtomicHistoryChange) {
-  return change.key.join('\u0000');
-}
-
 function canCoalesce(previous: HistoryEntry, changes: AtomicHistoryChange[], now: number) {
-  if (now - previous.timestamp > COALESCE_WINDOW_MS || previous.changes.length !== changes.length) return false;
+  if (previous.status === 'conflicted' || now - previous.timestamp > COALESCE_WINDOW_MS || previous.changes.length !== changes.length) return false;
   if (previous.changes.some((change) => !change.oldExists || !change.newExists)) return false;
   if (changes.some((change) => !change.oldExists || !change.newExists)) return false;
-  return previous.changes.every((change, index) => changeIdentity(change) === changeIdentity(changes[index]));
+  return previous.changes.every((change, index) => changePathId(change) === changePathId(changes[index]));
 }
 
 function mergeChanges(previous: AtomicHistoryChange[], changes: AtomicHistoryChange[]) {
@@ -371,54 +166,19 @@ function mergeChanges(previous: AtomicHistoryChange[], changes: AtomicHistoryCha
   })).filter((change) => change.oldExists !== change.newExists || !sameValue(change.oldValue, change.newValue));
 }
 
-nativeRemoveItem.call(localStorage, LEGACY_HISTORY_STORAGE_KEY);
-let historyState = readHistory();
-let panelOpen = false;
-let nodeDragActive = false;
-let pendingDragProject: CanonicalProject | null = null;
-let dragFlushTimer: number | null = null;
-let lastProject = (() => {
-  const raw = localStorage.getItem(PROJECT_STORAGE_KEY);
-  return raw ? normalizeProject(raw) : null;
-})();
-
-function recordProject(rawProject: string) {
-  const nextProject = normalizeProject(rawProject);
-  if (!nextProject) return;
-
-  if (!lastProject) {
-    lastProject = nextProject;
-    return;
-  }
-
-  if (nodeDragActive) {
-    pendingDragProject = nextProject;
-    return;
-  }
-
-  pendingDragProject = null;
-  const changes = diffProjects(lastProject, nextProject);
-  lastProject = nextProject;
+function appendChanges(changes: AtomicHistoryChange[], mutationId?: string) {
   if (changes.length === 0) return;
-
   const now = Date.now();
   const appliedEntries = historyState.entries.slice(0, historyState.cursor + 1);
   const previous = appliedEntries.at(-1);
 
-  if (
-    previous
-    && historyState.cursor === historyState.entries.length - 1
-    && canCoalesce(previous, changes, now)
-  ) {
+  if (!mutationId && previous && historyState.cursor === historyState.entries.length - 1 && canCoalesce(previous, changes, now)) {
     const merged = mergeChanges(previous.changes, changes);
     const entries = merged.length === 0
       ? appliedEntries.slice(0, -1)
-      : [
-          ...appliedEntries.slice(0, -1),
-          { ...previous, timestamp: now, label: describeEntry(merged), changes: merged },
-        ];
+      : [...appliedEntries.slice(0, -1), { ...previous, timestamp: now, label: describeEntry(merged), changes: merged }];
     historyState = { entries, cursor: entries.length - 1 };
-    writeHistory(historyState);
+    void writeHistory(historyState);
     renderPanel();
     return;
   }
@@ -430,27 +190,71 @@ function recordProject(rawProject: string) {
       timestamp: now,
       label: describeEntry(changes),
       changes,
+      ...(mutationId ? { mutationId } : {}),
+      status: 'applied' as const,
     },
   ].slice(-HISTORY_LIMIT);
-
   historyState = { entries, cursor: entries.length - 1 };
-  writeHistory(historyState);
+  void writeHistory(historyState);
   renderPanel();
+}
+
+function recordProject(rawProject: string) {
+  const nextProject = normalizeProject(rawProject);
+  if (!nextProject) return;
+  if (!lastProject) {
+    lastProject = nextProject;
+    return;
+  }
+  if (externalRecording || applyingHistory) {
+    lastProject = nextProject;
+    return;
+  }
+  if (nodeDragActive) {
+    pendingDragProject = nextProject;
+    return;
+  }
+  pendingDragProject = null;
+  const changes = diffProjects(lastProject, nextProject);
+  lastProject = nextProject;
+  appendChanges(changes);
 }
 
 export function recordHistoryProject(project: unknown) {
   try {
     recordProject(typeof project === 'string' ? project : JSON.stringify(project));
   } catch {
-    // Ignore non-serializable transient editor state; persisted project data remains unaffected.
+    // Ignore transient non-serializable editor state.
   }
+}
+
+export function setHistoryExternalRecording(enabled: boolean) {
+  externalRecording = enabled;
+}
+
+export function recordCommittedHistory(before: CanonicalProject, after: CanonicalProject, mutationId: string) {
+  const changes = diffProjects(before, after);
+  lastProject = cloneValue(after);
+  appendChanges(changes, mutationId);
+}
+
+export async function setHistoryScope(scope: string, project: CanonicalProject, controller: OnlineHistoryController | null = null) {
+  historyScope = scope;
+  onlineController = controller;
+  lastProject = cloneValue(project);
+  pendingDragProject = null;
+  historyState = controller ? normalizeHistoryState(await controller.load()) : readLocalHistory();
+  renderPanel();
+}
+
+export function getHistoryState() {
+  return cloneValue(historyState);
 }
 
 function isNodeDragPointerDown(event: PointerEvent) {
   if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey) return false;
   const target = event.target;
-  return target instanceof Element
-    && Boolean(target.closest('.react-flow__node, .react-flow__nodesselection-rect'));
+  return target instanceof Element && Boolean(target.closest('.react-flow__node, .react-flow__nodesselection-rect'));
 }
 
 function flushPendingDragProject() {
@@ -482,39 +286,84 @@ window.addEventListener('pointercancel', finishNodeDrag, true);
 
 Storage.prototype.setItem = function patchedSetItem(key: string, value: string) {
   nativeSetItem.call(this, key, value);
-  if (this === localStorage && key === PROJECT_STORAGE_KEY) recordProject(value);
+  if (this === localStorage && key === PROJECT_STORAGE_KEY) {
+    recordProject(value);
+    window.dispatchEvent(new CustomEvent(PROJECT_SAVED_EVENT, { detail: { rawProject: value } }));
+  }
 };
 
 function transitionsForCursor(targetCursor: number): HistoryTransition[] {
   const target = Math.max(-1, Math.min(targetCursor, historyState.entries.length - 1));
   if (target === historyState.cursor) return [];
-
   if (target < historyState.cursor) {
-    return historyState.entries
-      .slice(target + 1, historyState.cursor + 1)
-      .reverse()
+    return historyState.entries.slice(target + 1, historyState.cursor + 1).reverse()
       .map((entry) => ({ direction: 'undo' as const, changes: entry.changes }));
   }
-
-  return historyState.entries
-    .slice(historyState.cursor + 1, target + 1)
+  return historyState.entries.slice(historyState.cursor + 1, target + 1)
     .map((entry) => ({ direction: 'redo' as const, changes: entry.changes }));
 }
 
+function dispatchTransitions(transitions: HistoryTransition[]) {
+  window.dispatchEvent(new CustomEvent<HistoryApplyDetail>(HISTORY_APPLY_EVENT, { detail: { transitions } }));
+}
+
+async function applyOnlineStep(direction: HistoryDirection, targetCursor: number) {
+  if (!onlineController || applyingHistory) return;
+  const entryIndex = direction === 'undo' ? historyState.cursor : historyState.cursor + 1;
+  const entry = historyState.entries[entryIndex];
+  if (!entry) return;
+  applyingHistory = true;
+  try {
+    const result = await onlineController.apply(direction, entry);
+    if (!result.ok || !result.project) {
+      const entries = historyState.entries.map((candidate, index) => index === entryIndex
+        ? { ...candidate, status: 'conflicted' as const, conflictReason: result.reason ?? 'The shared project changed after this action.' }
+        : candidate);
+      historyState = { ...historyState, entries };
+      await writeHistory(historyState);
+      renderPanel();
+      return;
+    }
+
+    const previous = lastProject;
+    const project = result.project;
+    lastProject = cloneValue(project);
+    historyState = {
+      ...historyState,
+      cursor: targetCursor,
+      entries: historyState.entries.map((candidate, index) => index === entryIndex
+        ? { ...candidate, status: direction === 'undo' ? 'undone' as const : 'applied' as const, conflictReason: undefined }
+        : candidate),
+    };
+    await writeHistory(historyState);
+    nativeSetItem.call(localStorage, PROJECT_STORAGE_KEY, JSON.stringify(project));
+    if (previous) dispatchTransitions([{ direction, changes: diffProjects(previous, project) }]);
+    renderPanel();
+  } finally {
+    applyingHistory = false;
+  }
+}
+
 function restoreCursor(targetCursor: number) {
-  if (!lastProject) return;
+  if (!lastProject || applyingHistory) return;
   const target = Math.max(-1, Math.min(targetCursor, historyState.entries.length - 1));
+  if (target === historyState.cursor) return;
+
+  if (onlineController) {
+    if (Math.abs(target - historyState.cursor) !== 1) return;
+    void applyOnlineStep(target < historyState.cursor ? 'undo' : 'redo', target);
+    return;
+  }
+
   const transitions = transitionsForCursor(target);
   if (transitions.length === 0) return;
-
+  applyingHistory = true;
   lastProject = applyTransitionsToProject(lastProject, transitions);
   historyState = { ...historyState, cursor: target };
-  writeHistory(historyState);
+  void writeHistory(historyState);
   nativeSetItem.call(localStorage, PROJECT_STORAGE_KEY, JSON.stringify(lastProject));
-
-  window.dispatchEvent(new CustomEvent<HistoryApplyDetail>(HISTORY_APPLY_EVENT, {
-    detail: { transitions },
-  }));
+  dispatchTransitions(transitions);
+  applyingHistory = false;
   renderPanel();
 }
 
@@ -542,18 +391,13 @@ function formatTime(timestamp: number) {
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    "'": '&#39;',
-    '"': '&quot;',
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
   })[char]!);
 }
 
 function renderPanel() {
   const panel = document.querySelector<HTMLElement>('.history-panel');
   if (!panel) return;
-
   const canUndo = historyState.cursor >= 0;
   const canRedo = historyState.cursor < historyState.entries.length - 1;
   const recent = historyState.entries.map((entry, index) => ({ entry, index })).reverse();
@@ -561,7 +405,7 @@ function renderPanel() {
   panel.hidden = !panelOpen;
   panel.innerHTML = `
     <div class="history-panel-head">
-      <div><strong>Change history</strong><span>${historyState.entries.length}/${HISTORY_LIMIT} atomic transactions</span></div>
+      <div><strong>Change history</strong><span>${historyState.entries.length}/${HISTORY_LIMIT} transactions${onlineController ? ' · this user' : ''}</span></div>
       <div class="history-step-actions">
         <button type="button" data-history-action="undo" ${canUndo ? '' : 'disabled'} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
         <button type="button" data-history-action="redo" ${canRedo ? '' : 'disabled'} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
@@ -569,21 +413,21 @@ function renderPanel() {
     </div>
     <div class="history-list">
       ${recent.map(({ entry, index }) => `
-        <button type="button" class="history-entry${index === historyState.cursor ? ' is-current' : ''}" data-history-index="${index}">
+        <button type="button" class="history-entry${index === historyState.cursor ? ' is-current' : ''}${entry.status === 'conflicted' ? ' is-conflicted' : ''}" data-history-index="${index}" ${onlineController && Math.abs(index - historyState.cursor) > 1 ? 'disabled' : ''}>
           <span class="history-dot"></span>
           <span class="history-entry-copy">
             <strong>${escapeHtml(entry.label)}</strong>
             <small>${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'} · ${escapeHtml(formatKey(entry.changes[0]?.key ?? []))}</small>
-            <small>${formatTime(entry.timestamp)}${index === historyState.cursor ? ' · Current' : index > historyState.cursor ? ' · Redo' : ''}</small>
+            <small>${entry.status === 'conflicted' ? escapeHtml(entry.conflictReason ?? 'Conflict') : `${formatTime(entry.timestamp)}${index === historyState.cursor ? ' · Current' : index > historyState.cursor ? ' · Redo' : ''}`}</small>
           </span>
         </button>
       `).join('')}
-      <button type="button" class="history-entry${historyState.cursor === -1 ? ' is-current' : ''}" data-history-index="-1">
+      <button type="button" class="history-entry${historyState.cursor === -1 ? ' is-current' : ''}" data-history-index="-1" ${onlineController && historyState.cursor > 0 ? 'disabled' : ''}>
         <span class="history-dot"></span>
-        <span class="history-entry-copy"><strong>Start of history</strong><small>No stored snapshot · baseline project state</small></span>
+        <span class="history-entry-copy"><strong>Start of history</strong><small>Project baseline</small></span>
       </button>
     </div>
-    <div class="history-panel-foot">Atomic key/value changes only · Ctrl+Z undo · Ctrl+Shift+Z redo</div>
+    <div class="history-panel-foot">Atomic changes · Ctrl+Z undo · Ctrl+Shift+Z redo${onlineController ? ' · collaborative guard checks enabled' : ''}</div>
   `;
 }
 
@@ -591,7 +435,6 @@ function installHistoryUi() {
   if (document.querySelector('.history-control')) return true;
   const actions = document.querySelector<HTMLElement>('.top-actions');
   if (!actions) return false;
-
   if (!document.getElementById('history-control-styles')) {
     const style = document.createElement('style');
     style.id = 'history-control-styles';
@@ -603,63 +446,58 @@ function installHistoryUi() {
       .history-panel-head { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px 10px 13px; border-bottom: 1px solid rgba(255,255,255,.08); }
       .history-panel-head > div:first-child { display: grid; gap: 3px; }
       .history-panel-head strong { font-size: 11px; }
-      .history-panel-head span { color: #6f7886; font-size: 9px; }
+      .history-panel-head span, .history-entry small { color: #6f7886; font-size: 9px; }
       .history-step-actions { display: flex; gap: 5px; }
       .history-step-actions button { width: 30px; height: 30px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #151a22; color: #aab2bd; font-size: 17px; line-height: 1; }
-      .history-step-actions button:hover:not(:disabled) { color: #f3f5f7; background: #1b212b; }
       .history-step-actions button:disabled { opacity: .3; cursor: not-allowed; }
-      .history-list { max-height: 410px; overflow: auto; padding: 6px; scrollbar-width: thin; scrollbar-color: #2b323c transparent; }
+      .history-list { max-height: 410px; overflow: auto; padding: 6px; scrollbar-width: thin; }
       .history-entry { width: 100%; min-height: 52px; display: grid; grid-template-columns: 13px 1fr; align-items: center; gap: 8px; padding: 7px 9px; border: 0; border-radius: 8px; background: transparent; color: #a8b0bb; text-align: left; }
-      .history-entry:hover { background: rgba(255,255,255,.045); color: #eef2f6; }
-      .history-entry.is-current { background: rgba(182,255,86,.055); color: #eef2f6; }
-      .history-dot { width: 7px; height: 7px; justify-self: center; border: 1px solid #596372; border-radius: 50%; background: #252b34; }
-      .history-entry.is-current .history-dot { border-color: #b6ff56; background: #b6ff56; box-shadow: 0 0 10px rgba(182,255,86,.35); }
+      .history-entry:hover:not(:disabled) { background: rgba(255,255,255,.045); color: #eef2f6; }
+      .history-entry:disabled { cursor: default; opacity: .72; }
+      .history-entry.is-current { background: rgba(182,255,86,.055); color: #eef4e8; }
+      .history-entry.is-conflicted { background: rgba(255,112,96,.06); }
+      .history-dot { width: 7px; height: 7px; border: 1px solid #58606b; border-radius: 999px; justify-self: center; }
+      .history-entry.is-current .history-dot { border-color: #b6ff56; background: #b6ff56; box-shadow: 0 0 9px rgba(182,255,86,.3); }
+      .history-entry.is-conflicted .history-dot { border-color: #ff7060; background: #ff7060; }
       .history-entry-copy { min-width: 0; display: grid; gap: 2px; }
       .history-entry-copy strong, .history-entry-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .history-entry-copy strong { font-size: 10px; font-weight: 680; }
-      .history-entry-copy small { color: #687180; font-size: 9px; }
-      .history-panel-foot { padding: 8px 12px 9px; border-top: 1px solid rgba(255,255,255,.07); color: #606978; font-size: 9px; text-align: center; }
-      @media (max-width: 760px) { .history-panel { position: fixed; top: 68px; right: 8px; } }
+      .history-entry-copy strong { font-size: 10px; font-weight: 600; }
+      .history-panel-foot { padding: 8px 12px 10px; border-top: 1px solid rgba(255,255,255,.07); color: #59616d; font-size: 8px; }
     `;
     document.head.appendChild(style);
   }
 
-  const wrapper = document.createElement('div');
-  wrapper.className = 'history-control';
-  wrapper.innerHTML = `
-    <button type="button" class="icon-button labeled history-button" aria-label="Change history" title="Change history">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2" /></svg>
-      History
-    </button>
-    <div class="history-panel" hidden></div>
-  `;
-
-  const firstActionButton = actions.querySelector('.icon-button');
-  actions.insertBefore(wrapper, firstActionButton);
-
-  wrapper.querySelector('.history-button')?.addEventListener('click', (event) => {
+  const control = document.createElement('div');
+  control.className = 'history-control';
+  control.innerHTML = `<button type="button" class="ghost history-button" title="Change history" aria-label="Change history"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.34-5.66L4 8.68"></path><path d="M4 4v4.68h4.68"></path><path d="M12 7v5l3 2"></path></svg><span>History</span></button><div class="history-panel" hidden></div>`;
+  actions.insertBefore(control, actions.firstChild);
+  control.querySelector('.history-button')?.addEventListener('click', (event) => {
     event.stopPropagation();
     panelOpen = !panelOpen;
     renderPanel();
   });
-  wrapper.querySelector('.history-panel')?.addEventListener('click', (event) => {
+  control.querySelector('.history-panel')?.addEventListener('click', (event) => {
     event.stopPropagation();
     const target = event.target as HTMLElement;
-    const actionButton = target.closest<HTMLElement>('[data-history-action]');
-    if (actionButton?.dataset.historyAction === 'undo') undo();
-    if (actionButton?.dataset.historyAction === 'redo') redo();
-    const entryButton = target.closest<HTMLElement>('[data-history-index]');
-    if (entryButton?.dataset.historyIndex !== undefined) restoreCursor(Number(entryButton.dataset.historyIndex));
+    const action = target.closest<HTMLElement>('[data-history-action]')?.dataset.historyAction;
+    if (action === 'undo') undo();
+    if (action === 'redo') redo();
+    const indexValue = target.closest<HTMLElement>('[data-history-index]')?.dataset.historyIndex;
+    if (indexValue !== undefined) restoreCursor(Number(indexValue));
   });
   document.addEventListener('click', () => {
     if (!panelOpen) return;
     panelOpen = false;
     renderPanel();
   });
-
   renderPanel();
   return true;
 }
+
+nativeRemoveItem.call(localStorage, LEGACY_HISTORY_STORAGE_KEY);
+const initialRaw = localStorage.getItem(PROJECT_STORAGE_KEY);
+lastProject = initialRaw ? normalizeProject(initialRaw) : null;
+historyState = readLocalHistory();
 
 if (!installHistoryUi()) {
   const observer = new MutationObserver(() => {
