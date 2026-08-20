@@ -38,15 +38,30 @@ jobs:
           npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/skill-tree-preview.log 2>&1 &
           PREVIEW_PID=$!
           trap 'kill $PREVIEW_PID 2>/dev/null || true' EXIT
+
+          READY=0
           for attempt in {1..20}; do
             if curl --fail --silent --show-error http://127.0.0.1:4173/Skill-Tree-Maker/ -o /tmp/skill-tree-index.html; then
+              READY=1
               break
             fi
             sleep 0.5
           done
+          test "$READY" = "1"
           test -s /tmp/skill-tree-index.html
           grep -q '/Skill-Tree-Maker/assets/' /tmp/skill-tree-index.html
-          ASSET=$(grep -oE '/Skill-Tree-Maker/assets/[^"'"' ]+' /tmp/skill-tree-index.html | head -n 1)
+
+          python - <<'PY' > /tmp/skill-tree-asset-path
+          from pathlib import Path
+          import re
+          html = Path('/tmp/skill-tree-index.html').read_text()
+          match = re.search(r'["\x27](/Skill-Tree-Maker/assets/[^"\x27]+)["\x27]', html)
+          if not match:
+              raise SystemExit('No built asset URL found in preview HTML')
+          print(match.group(1))
+          PY
+
+          ASSET=$(cat /tmp/skill-tree-asset-path)
           test -n "$ASSET"
           curl --fail --silent --show-error "http://127.0.0.1:4173${ASSET}" -o /dev/null
 
