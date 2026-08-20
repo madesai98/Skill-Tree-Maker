@@ -1119,9 +1119,12 @@ function SkillTreeEditor() {
           key: composeStatKey(groupKey, localKey),
           name: 'New Stat',
           type: 'number',
+          iconId: null,
           groupId,
           groupName,
           groupKey,
+          groupIconId: null,
+          groupColor: '#b6ff56',
         },
       ];
     });
@@ -1139,15 +1142,18 @@ function SkillTreeEditor() {
           key: composeStatKey(group.groupKey, localKey),
           name: 'New Stat',
           type: 'number',
+          iconId: null,
           groupId,
           groupName: group.groupName,
           groupKey: group.groupKey,
+          groupIconId: group.groupIconId,
+          groupColor: group.groupColor,
         },
       ];
     });
   };
 
-  const updateStatGroup = (groupId: string, patch: { name?: string; key?: string }) => {
+  const updateStatGroup = (groupId: string, patch: { name?: string; key?: string; iconId?: string | null; color?: string }) => {
     setStats((current) => {
       const group = current.find((stat) => stat.groupId === groupId);
       if (!group) return current;
@@ -1160,6 +1166,8 @@ function SkillTreeEditor() {
           ...stat,
           groupName: nextName,
           groupKey: nextGroupKey,
+          groupIconId: patch.iconId !== undefined ? patch.iconId : stat.groupIconId,
+          groupColor: patch.color !== undefined ? normalizeColor(patch.color, stat.groupColor) : stat.groupColor,
           key: composeStatKey(nextGroupKey, localKey),
         };
       });
@@ -1223,7 +1231,7 @@ function SkillTreeEditor() {
     const id = uid('currency');
     setCurrencies((current) => [
       ...current,
-      { id, key: `currency.${current.length + 1}`, name: 'New Currency', symbol: '◇' },
+      { id, key: `currency.${current.length + 1}`, name: 'New Currency', iconId: null, color: '#b6ff56' },
     ]);
     setNodes((current) => current.map((node) =>
       node.data.cost.currencyId
@@ -1251,8 +1259,66 @@ function SkillTreeEditor() {
     });
   };
 
+  const parseIconFile = async (file: File) => {
+    if (file.type && file.type !== 'image/svg+xml' && !file.name.toLowerCase().endsWith('.svg')) {
+      window.alert('Choose an SVG file.');
+      return null;
+    }
+    const svg = sanitizeSvgMarkup(await file.text());
+    if (!svg) {
+      window.alert('That file is not a valid SVG, or it is larger than 256 KB.');
+      return null;
+    }
+    return svg;
+  };
+
+  const addIconAsset = async (file: File) => {
+    const svg = await parseIconFile(file);
+    if (!svg) return null;
+    const id = uid('icon');
+    setIcons((current) => [...current, { id, name: iconNameFromFile(file), svg }]);
+    showNotice('SVG added to the icon pool.');
+    return id;
+  };
+
+  const replaceIconAsset = async (iconId: string, file: File) => {
+    const svg = await parseIconFile(file);
+    if (!svg) return;
+    setIcons((current) => current.map((icon) => icon.id === iconId ? { ...icon, svg } : icon));
+    showNotice('Icon replaced everywhere it is used.');
+  };
+
+  const iconUsageCount = (iconId: string) => {
+    const groupIds = new Set<string>();
+    let count = currencies.filter((currency) => currency.iconId === iconId).length;
+    stats.forEach((stat) => {
+      if (stat.iconId === iconId) count += 1;
+      if (stat.groupIconId === iconId && !groupIds.has(stat.groupId)) {
+        groupIds.add(stat.groupId);
+        count += 1;
+      }
+    });
+    return count;
+  };
+
+  const deleteIconAsset = (iconId: string) => {
+    const usage = iconUsageCount(iconId);
+    if (usage > 0 && !window.confirm(`This icon is used by ${usage} item${usage === 1 ? '' : 's'}. Delete it and clear those icon assignments?`)) return;
+    setIcons((current) => current.filter((icon) => icon.id !== iconId));
+    setStats((current) => current.map((stat) => ({
+      ...stat,
+      iconId: stat.iconId === iconId ? null : stat.iconId,
+      groupIconId: stat.groupIconId === iconId ? null : stat.groupIconId,
+    })));
+    setCurrencies((current) => current.map((currency) => ({
+      ...currency,
+      iconId: currency.iconId === iconId ? null : currency.iconId,
+    })));
+    showNotice('Icon deleted and cleared from its assignments.');
+  };
+
   const exportProject = () => {
-    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies };
+    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };
     const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1274,6 +1340,7 @@ function SkillTreeEditor() {
         setEdges(project.edges);
         setStats(project.stats);
         setCurrencies(project.currencies);
+        setIcons(project.icons);
         setSelectedNodeId(project.nodes[0]?.id ?? null);
         showNotice('Project imported. DAG validation applied.');
       } catch {
