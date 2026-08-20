@@ -142,12 +142,15 @@ function describeEntry(changes: AtomicHistoryChange[]) {
   if (structural('stats', false)) return 'Removed stat';
   if (structural('currencies', true)) return 'Added currency';
   if (structural('currencies', false)) return 'Removed currency';
+  if (structural('icons', true)) return 'Added icon';
+  if (structural('icons', false)) return 'Removed icon';
   if (changes.some((change) => change.key.includes('upgrades') && !change.oldExists && change.newExists)) return 'Added skill effect';
   if (changes.some((change) => change.key.includes('upgrades') && change.oldExists && !change.newExists)) return 'Removed skill effect';
   if (changes.some((change) => change.key[0] === 'nodes' && change.key.includes('position'))) return 'Moved skill';
   if (changes.some((change) => change.key[0] === 'nodes' && change.key.at(-1) === 'name')) return 'Renamed skill';
   if (changes.some((change) => change.key[0] === 'stats')) return 'Edited stat pool';
   if (changes.some((change) => change.key[0] === 'currencies')) return 'Edited currencies';
+  if (changes.some((change) => change.key[0] === 'icons')) return 'Edited icon pool';
   if (changes.some((change) => change.key[0] === 'nodes')) return 'Edited skill';
   return 'Project change';
 }

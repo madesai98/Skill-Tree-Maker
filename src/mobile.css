@@ -51,7 +51,7 @@
     min-width: 0;
     transform: none;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
     padding: 4px;
     background: rgba(15, 18, 24, .88);
