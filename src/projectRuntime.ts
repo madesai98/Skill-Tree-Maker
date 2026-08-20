@@ -10,6 +10,7 @@ import { rebaseQueuedProject } from './collaboration';
 import {
   HISTORY_APPLY_EVENT,
   flushHistoryWrites,
+  getHistoryProject,
   PROJECT_SAVED_EVENT,
   recordCommittedHistory,
   setHistoryExternalRecording,
@@ -269,11 +270,13 @@ async function switchOnlineProject(id: string) {
 
   cloudUnsubscribe = cloudStore.subscribe(id, (nextCloud) => {
     if (mode !== 'online' || activeProjectId !== id) return;
-    if (cloudWriteInFlight) {
+    const working = readWorkingProject();
+    const editorProject = getHistoryProject();
+    const hasUnsavedEditorState = Boolean(editorProject && !sameValue(editorProject, working));
+    if (cloudWriteInFlight || hasUnsavedEditorState) {
       pendingRemoteCloud = newerCloudDocument(pendingRemoteCloud, nextCloud);
     } else {
       cloudBaseDocument = newerCloudDocument(cloudBaseDocument, nextCloud);
-      const working = readWorkingProject();
       if (!sameValue(working, nextCloud.project)) void applyRemoteSnapshot(nextCloud.project);
       else activeProject = cloneValue(nextCloud.project);
       connectionStatus = 'Online';
