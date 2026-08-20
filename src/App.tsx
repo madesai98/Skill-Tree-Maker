@@ -1362,7 +1362,7 @@ function SkillTreeEditor() {
           id: node.id,
           position: node.position,
           name: node.data.name,
-          currency: currency ? { symbol: currency.symbol, amount: node.data.cost.amount } : null,
+          currency: currency ? { symbol: currency.symbol ?? '', amount: node.data.cost.amount } : null,
           effects: node.data.upgrades.flatMap((upgrade) => {
             const stat = statMap.get(upgrade.statId);
             if (!stat) return [];
@@ -1430,6 +1430,9 @@ function SkillTreeEditor() {
           </button>
           <button className={activeView === 'currencies' ? 'active' : ''} onClick={() => setActiveView('currencies')}>
             <Icon name="currency" /> Currencies
+          </button>
+          <button className={activeView === 'icons' ? 'active' : ''} onClick={() => setActiveView('icons')}>
+            <Icon name="icons" /> Icon pool
           </button>
         </nav>
 
@@ -1712,7 +1715,7 @@ function SkillTreeEditor() {
               {statGroups.map((group) => (
                 <section className="stat-group-card" key={group.id}>
                   <div className="stat-group-head">
-                    <div className="stat-group-fields">
+                    <div className="stat-group-fields with-appearance">
                       <label>
                         <span>Group name</span>
                         <input value={group.name} onChange={(e) => updateStatGroup(group.id, { name: e.target.value })} />
@@ -1721,6 +1724,23 @@ function SkillTreeEditor() {
                         <span>Group game key</span>
                         <input className="mono-input" value={group.key} onChange={(e) => updateStatGroup(group.id, { key: e.target.value })} />
                       </label>
+                      <label>
+                        <span>Group icon</span>
+                        <IconPicker
+                          icons={icons}
+                          value={group.iconId}
+                          ariaLabel={`${group.name} icon`}
+                          onChange={(iconId) => updateStatGroup(group.id, { iconId })}
+                          onUpload={async (file) => {
+                            const iconId = await addIconAsset(file);
+                            if (iconId) updateStatGroup(group.id, { iconId });
+                          }}
+                        />
+                      </label>
+                      <label className="stat-group-color-field">
+                        <span>Color</span>
+                        <input type="color" value={group.color} onChange={(e) => updateStatGroup(group.id, { color: e.target.value })} />
+                      </label>
                     </div>
                     <div className="stat-group-actions">
                       <button className="small-button" onClick={() => duplicateStatGroup(group.id)}>Duplicate group</button>
@@ -1728,13 +1748,13 @@ function SkillTreeEditor() {
                     </div>
                   </div>
                   <div className="stat-table-card">
-                    <div className="stat-table-header">
-                      <span>Display name</span><span>Game key</span><span>Type</span><span>Used by</span><span />
+                    <div className="stat-table-header with-icons">
+                      <span>Display name</span><span>Game key</span><span>Icon</span><span>Type</span><span>Used by</span><span />
                     </div>
                     {group.stats.map((stat) => {
                       const usage = nodes.reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === stat.id).length, 0);
                       return (
-                        <div className="stat-row" key={stat.id}>
+                        <div className="stat-row with-icons" key={stat.id}>
                           <label><span className="mobile-label">Display name</span><input value={stat.name} onChange={(e) => updateStat(stat.id, { name: e.target.value })} /></label>
                           <label className="stat-key-label">
                             <span className="mobile-label">Game key</span>
@@ -1743,6 +1763,20 @@ function SkillTreeEditor() {
                               <input className="mono-input" value={statLocalKey(stat)} onChange={(e) => updateStatLocalKey(stat.id, e.target.value)} />
                             </span>
                           </label>
+                          <div className="stat-row-icon">
+                            <span className="mobile-label">Icon</span>
+                            <IconPicker
+                              compact
+                              icons={icons}
+                              value={stat.iconId}
+                              ariaLabel={`${stat.name} icon`}
+                              onChange={(iconId) => updateStat(stat.id, { iconId })}
+                              onUpload={async (file) => {
+                                const iconId = await addIconAsset(file);
+                                if (iconId) updateStat(stat.id, { iconId });
+                              }}
+                            />
+                          </div>
                           <label><span className="mobile-label">Type</span><select value={stat.type} onChange={(e) => updateStat(stat.id, { type: e.target.value as StatType })}><option value="number">Number</option><option value="boolean">Toggle</option></select></label>
                           <div className="usage-cell"><span className={`type-dot ${stat.type}`} />{usage} effect{usage === 1 ? '' : 's'}</div>
                           <button className="row-delete" onClick={() => deleteStat(stat.id)} aria-label={`Delete ${stat.name}`}><Icon name="trash" /></button>
@@ -1766,7 +1800,7 @@ function SkillTreeEditor() {
             </div>
           </div>
         </section>
-      ) : (
+      ) : activeView === 'currencies' ? (
         <section className="stat-pool-view currency-pool-view">
           <div className="stat-pool-head">
             <div>
@@ -1778,19 +1812,32 @@ function SkillTreeEditor() {
           </div>
 
           <div className="stat-table-card">
-            <div className="currency-table-header">
-              <span>Display name</span><span>Game key</span><span>Symbol</span><span>Used by</span><span />
+            <div className="currency-table-header with-icons">
+              <span>Display name</span><span>Game key</span><span>Icon</span><span>Color</span><span>Used by</span><span />
             </div>
             {currencies.length === 0 ? (
               <div className="stat-empty"><h3>No currencies configured</h3><p>Add a currency to make it available for skill costs.</p></div>
             ) : currencies.map((currency) => {
               const usage = nodes.filter((node) => node.data.cost.currencyId === currency.id).length;
               return (
-                <div className="currency-row" key={currency.id}>
+                <div className="currency-row with-icons" key={currency.id}>
                   <label><span className="mobile-label">Display name</span><input value={currency.name} onChange={(e) => updateCurrency(currency.id, { name: e.target.value })} /></label>
                   <label><span className="mobile-label">Game key</span><input className="mono-input" value={currency.key} onChange={(e) => updateCurrency(currency.id, { key: e.target.value })} /></label>
-                  <label><span className="mobile-label">Symbol</span><input className="symbol-input" value={currency.symbol} maxLength={4} onChange={(e) => updateCurrency(currency.id, { symbol: e.target.value })} /></label>
-                  <div className="usage-cell"><span className="currency-preview">{currency.symbol || '◇'}</span>{usage} skill{usage === 1 ? '' : 's'}</div>
+                  <div className="currency-icon-cell">
+                    <span className="mobile-label">Icon</span>
+                    <IconPicker
+                      icons={icons}
+                      value={currency.iconId}
+                      ariaLabel={`${currency.name} icon`}
+                      onChange={(iconId) => updateCurrency(currency.id, { iconId })}
+                      onUpload={async (file) => {
+                        const iconId = await addIconAsset(file);
+                        if (iconId) updateCurrency(currency.id, { iconId });
+                      }}
+                    />
+                  </div>
+                  <label className="currency-color-field"><span className="mobile-label">Color</span><input type="color" value={currency.color} onChange={(e) => updateCurrency(currency.id, { color: e.target.value })} /></label>
+                  <div className="usage-cell currency-usage-preview"><SvgAssetPreview icon={icons.find((icon) => icon.id === currency.iconId)} />{usage} skill{usage === 1 ? '' : 's'}</div>
                   <button className="row-delete" onClick={() => deleteCurrency(currency.id)} aria-label={`Delete ${currency.name}`}><Icon name="trash" /></button>
                 </div>
               );
@@ -1799,10 +1846,56 @@ function SkillTreeEditor() {
 
           <div className="type-reference single-reference">
             <div className="reference-card">
-              <span className="type-icon currency">◇</span>
-              <div><h3>Game-facing currency IDs</h3><p>Use stable game keys in exported data; display names and symbols can stay presentation-only.</p></div>
+              <span className="type-icon currency"><Icon name="icons" /></span>
+              <div><h3>Reusable currency appearance</h3><p>Currency icons reference the shared SVG pool while colors remain currency-specific presentation metadata.</p></div>
             </div>
           </div>
+        </section>
+      ) : (
+        <section className="icon-pool-view">
+          <div className="icon-pool-head">
+            <div>
+              <span className="section-kicker">CONFIGURATION</span>
+              <h2>Icon pool</h2>
+              <p>Reusable SVG assets stored with this project. Replacing an asset updates every reference; deleting it clears every assignment that uses it.</p>
+            </div>
+            <label className="primary-button">
+              <Icon name="plus" /> Add SVG
+              <input
+                type="file"
+                accept=".svg,image/svg+xml"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void addIconAsset(file);
+                }}
+              />
+            </label>
+          </div>
+
+          {icons.length === 0 ? (
+            <div className="icon-pool-empty"><h3>No SVG icons yet</h3><p>Add an SVG here or upload one directly from a stat group, stat item, or currency.</p></div>
+          ) : (
+            <div className="icon-pool-grid">
+              {icons.map((icon) => {
+                const usage = iconUsageCount(icon.id);
+                return (
+                  <article className="icon-pool-card" key={icon.id}>
+                    <SvgAssetPreview icon={icon} />
+                    <div className="icon-pool-card-main">
+                      <input aria-label="Icon name" value={icon.name} onChange={(event) => setIcons((current) => current.map((item) => item.id === icon.id ? { ...item, name: event.target.value } : item))} />
+                      <div className="icon-pool-meta"><span>{usage} use{usage === 1 ? '' : 's'}</span><span className="id-chip">{icon.id}</span></div>
+                      <div className="icon-pool-actions">
+                        <label className="small-button">Replace SVG<input type="file" accept=".svg,image/svg+xml" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replaceIconAsset(icon.id, file); }} /></label>
+                        <button className="danger-button" onClick={() => deleteIconAsset(icon.id)}><Icon name="trash" /> Delete</button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
     </main>
