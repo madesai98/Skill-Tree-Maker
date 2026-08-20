@@ -32,6 +32,7 @@ import {
   recordHistoryProject,
 } from './history';
 import type { HistoryApplyDetail } from './history';
+import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
@@ -111,6 +112,7 @@ type SkillInteractionContextValue = {
   beginGesture: (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   duplicateNode: (nodeId: string) => void;
   beginRightPan: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  nodeLabels: ReadonlyMap<string, NodeLabelView>;
 };
 
 const SkillInteractionContext = createContext<SkillInteractionContextValue | null>(null);
@@ -488,6 +490,7 @@ function SkillLinkEdgeComponent({
 
 function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
   const interaction = useContext(SkillInteractionContext);
+  const label = interaction?.nodeLabels.get(id);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -529,6 +532,25 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
     >
       <Handle className="skill-handle skill-handle-target" type="target" position={Position.Left} isConnectable={false} />
       <div className="skill-node-core" />
+      {label && (
+        <div
+          className="skill-node-label"
+          style={{ left: `${label.left}px`, top: `${label.top}px`, width: `${label.width}px`, textAlign: label.align }}
+          aria-hidden="true"
+        >
+          {label.name && <div className="skill-node-label-name">{label.name}</div>}
+          {label.effects.length > 0 && (
+            <div className="skill-node-label-effects">
+              {label.effects.map((effect, index) => (
+                <div className="skill-node-label-effect" key={`${effect.text}-${index}`}>
+                  <span className={`skill-node-label-modifier ${effect.tone}`}>{effect.modifier}</span>
+                  <span>{effect.target}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <Handle className="skill-handle skill-handle-source" type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
@@ -537,7 +559,7 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 const nodeTypes = { skill: SkillNode };
 const edgeTypes = { skillLink: SkillLinkEdgeComponent };
 
-function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' }) {
+function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'nodeName' | 'nodeStats' }) {
   const paths: Record<string, ReactElement> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />,
@@ -548,6 +570,8 @@ function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree
     currency: <><path d="M12 3 20 8l-8 13L4 8l8-5Z" /><path d="M4 8h16" /></>,
     close: <path d="m6 6 12 12M18 6 6 18" />,
     link: <path d="M9 15l6-6m-8.5 8.5-1 1a3.54 3.54 0 0 1-5-5l3-3a3.54 3.54 0 0 1 5 0m7-1a3.54 3.54 0 0 1 5 5l-3 3a3.54 3.54 0 0 1-5 0" />,
+    nodeName: <><path d="M5 6h14M12 6v12M8.5 18h7" /><path d="M7 9V6m10 3V6" /></>,
+    nodeStats: <><path d="M4 6h7m4 0h5M4 12h3m4 0h9M4 18h9m4 0h3" /><path d="M13 4v4M9 10v4M15 16v4" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -571,6 +595,8 @@ function SkillTreeEditor() {
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<SkillFlowNode, SkillLinkEdge> | null>(null);
   const [savedAt, setSavedAt] = useState('Saved');
   const [connectionChoice, setConnectionChoice] = useState('');
+  const [showNodeNames, setShowNodeNames] = useState(true);
+  const [showNodeStats, setShowNodeStats] = useState(true);
   const [gesture, setGesture] = useState<GestureState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const flowWrapRef = useRef<HTMLDivElement>(null);
@@ -1210,6 +1236,29 @@ function SkillTreeEditor() {
   const incomingEdges = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId) : [];
   const selectedCurrency = currencies.find((currency) => currency.id === selectedNode?.data.cost.currencyId);
 
+  const nodeLabels = useMemo(() => {
+    const statMap = new Map(stats.map((stat) => [stat.id, stat]));
+    return buildNodeLabelLayout(
+      nodes.map((node) => ({
+        id: node.id,
+        position: node.position,
+        name: node.data.name,
+        effects: node.data.upgrades.flatMap((upgrade) => {
+          const stat = statMap.get(upgrade.statId);
+          if (!stat) return [];
+          return [{
+            operator: upgrade.operator,
+            value: upgrade.value,
+            groupName: stat.groupName,
+            statName: stat.name,
+          }];
+        }),
+      })),
+      edges,
+      { showNames: showNodeNames, showStats: showNodeStats },
+    );
+  }, [edges, nodes, showNodeNames, showNodeStats, stats]);
+
   const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
     const nodeMap = new Map<string, SkillFlowNode>(nodes.map((node): [string, SkillFlowNode] => [node.id, node]));
     return edges.flatMap((edge) => {
@@ -1278,6 +1327,29 @@ function SkillTreeEditor() {
               <button className="primary-button" onClick={() => createNodeAt()}><Icon name="plus" /> Add skill</button>
             </div>
 
+            <div className="canvas-display-toolbar" aria-label="Node display options">
+              <button
+                className={`canvas-icon-toggle${showNodeNames ? ' is-active' : ''}`}
+                type="button"
+                aria-label="Toggle node names"
+                aria-pressed={showNodeNames}
+                title="Toggle node names"
+                onClick={() => setShowNodeNames((current) => !current)}
+              >
+                <Icon name="nodeName" />
+              </button>
+              <button
+                className={`canvas-icon-toggle${showNodeStats ? ' is-active' : ''}`}
+                type="button"
+                aria-label="Toggle node stat effects"
+                aria-pressed={showNodeStats}
+                title="Toggle node stat effects"
+                onClick={() => setShowNodeStats((current) => !current)}
+              >
+                <Icon name="nodeStats" />
+              </button>
+            </div>
+
             <details className="shortcut-legend" open>
               <summary>Shortcuts</summary>
               <div className="shortcut-list">
@@ -1319,7 +1391,7 @@ function SkillTreeEditor() {
               </svg>
             )}
 
-            <SkillInteractionContext.Provider value={{ beginGesture, duplicateNode, beginRightPan }}>
+            <SkillInteractionContext.Provider value={{ beginGesture, duplicateNode, beginRightPan, nodeLabels }}>
               <ReactFlow<SkillFlowNode, SkillLinkEdge>
                 nodes={nodes}
                 edges={renderedEdges}
