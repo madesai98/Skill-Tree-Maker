@@ -41,7 +41,6 @@ import {
   readAtKey,
   sameValue,
   sideForDirection,
-  sourceSideForDirection,
   touchedEntityKeys,
   validateProjectGraph,
   valueMatchesSide,
@@ -60,7 +59,7 @@ const HISTORY_V3_PREFIX = 'incremental-td-skill-tree:history:v3:';
 const CLOUD_COLLECTION = 'skillTreeMakerProjects';
 const FIREBASE_APP_NAME = 'skill-tree-maker-online';
 
-export type StorageMode = 'local' | 'online';
+type StorageMode = 'local' | 'online';
 
 type ProjectMeta = {
   id: string;
@@ -95,7 +94,6 @@ let activeProject: CanonicalProject = readWorkingProject();
 let firebaseApp: FirebaseApp | null = null;
 let firestore: Firestore | null = null;
 let cloudProjects: ProjectMeta[] = [];
-let cloudBaseProject: CanonicalProject | null = null;
 let cloudBaseDocument: CloudProjectDocument | null = null;
 let cloudUnsubscribe: Unsubscribe | null = null;
 let applyingExternalProject = false;
@@ -165,8 +163,7 @@ function localProjectKey(id: string) {
 }
 
 function readWorkingProject() {
-  const normalized = normalizeProject(localStorage.getItem(WORKING_PROJECT_KEY) ?? '');
-  return normalized ?? createStarterProject();
+  return normalizeProject(localStorage.getItem(WORKING_PROJECT_KEY) ?? '') ?? createStarterProject();
 }
 
 function readLocalProject(id: string) {
@@ -192,9 +189,8 @@ function ensureLocalMigration() {
   writeSettings();
 
   const oldHistory = localStorage.getItem(LEGACY_HISTORY_V2_KEY);
-  if (oldHistory && !localStorage.getItem(`${HISTORY_V3_PREFIX}local:${id}`)) {
-    localStorage.setItem(`${HISTORY_V3_PREFIX}local:${id}`, oldHistory);
-  }
+  const nextHistoryKey = `${HISTORY_V3_PREFIX}local:${id}`;
+  if (oldHistory && !localStorage.getItem(nextHistoryKey)) localStorage.setItem(nextHistoryKey, oldHistory);
 }
 
 function projectPath(change: AtomicHistoryChange) {
@@ -245,10 +241,12 @@ async function createLocalProject(source?: CanonicalProject, name?: string) {
   const now = Date.now();
   const id = randomId('project');
   const project = cloneValue(source ?? createBlankProject(activeProject));
-  localProjects = [
-    ...localProjects,
-    { id, name: name ?? `Skill Tree ${localProjects.length + 1}`, createdAt: now, updatedAt: now },
-  ];
+  localProjects = [...localProjects, {
+    id,
+    name: name ?? `Skill Tree ${localProjects.length + 1}`,
+    createdAt: now,
+    updatedAt: now,
+  }];
   localStorage.setItem(localProjectKey(id), JSON.stringify(project));
   writeLocalIndex();
   await switchLocalProject(id);
@@ -280,9 +278,8 @@ function renameLocalProject(id: string) {
 }
 
 async function configureFirebase(config: FirebaseOptions) {
+  stopCloudSubscription();
   if (firebaseApp) {
-    cloudUnsubscribe?.();
-    cloudUnsubscribe = null;
     await deleteApp(firebaseApp);
     firebaseApp = null;
     firestore = null;
@@ -372,12 +369,17 @@ async function deleteCloudProject(id: string) {
   if (!firestore) return;
   const meta = cloudProjects.find((item) => item.id === id);
   if (!meta || !window.confirm(`Delete shared project “${meta.name}”? This affects every collaborator.`)) return;
+  const historySnapshot = await getDocs(collection(firestore, CLOUD_COLLECTION, id, 'histories'));
+  await Promise.all(historySnapshot.docs.map((historyDoc) => deleteDoc(historyDoc.ref)));
   await deleteDoc(doc(firestore, CLOUD_COLLECTION, id));
   cloudProjects = cloudProjects.filter((item) => item.id !== id);
   if (settings.selectedOnlineProjectId === id) {
     const next = cloudProjects[0];
     if (next) await switchOnlineProject(next.id);
-    else await switchLocalProject(selectedLocalMeta()!.id);
+    else {
+      const local = selectedLocalMeta();
+      if (local) await switchLocalProject(local.id);
+    }
   }
   renderProjectUi();
 }
@@ -400,7 +402,6 @@ async function renameCloudProject(id: string) {
 function stopCloudSubscription() {
   cloudUnsubscribe?.();
   cloudUnsubscribe = null;
-  cloudBaseProject = null;
   cloudBaseDocument = null;
 }
 
@@ -415,7 +416,6 @@ async function switchOnlineProject(id: string) {
   settings = { ...settings, mode: 'online', selectedOnlineProjectId: id };
   writeSettings();
   activeProjectId = id;
-  cloudBaseProject = cloneValue(cloud.project);
   cloudBaseDocument = cloneValue(cloud);
   connectionStatus = 'Online';
   await applyWorkingProject(cloud.project, `online:${id}:${userId}`, onlineHistoryController(id));
@@ -425,19 +425,13 @@ async function switchOnlineProject(id: string) {
     const nextCloud = parseCloudDocument(nextSnapshot.data());
     if (!nextCloud) return;
     connectionStatus = 'Online';
-    cloudBaseProject = cloneValue(nextCloud.project);
     cloudBaseDocument = cloneValue(nextCloud);
-    if (cloudWriteInFlight) {
-      renderProjectUi();
-      return;
+    if (!cloudWriteInFlight) {
+      const working = readWorkingProject();
+      if (!sameValue(working, nextCloud.project)) void applyRemoteSnapshot(nextCloud.project);
+      else activeProject = cloneValue(nextCloud.project);
     }
-    const working = readWorkingProject();
-    if (sameValue(working, nextCloud.project)) {
-      activeProject = cloneValue(nextCloud.project);
-      renderProjectUi();
-      return;
-    }
-    void applyRemoteSnapshot(nextCloud.project);
+    renderProjectUi();
   }, () => {
     connectionStatus = 'Disconnected';
     renderProjectUi();
@@ -460,16 +454,20 @@ async function applyRemoteSnapshot(project: CanonicalProject) {
   }
 }
 
-function currentSideMatches(project: CanonicalProject, change: AtomicHistoryChange, expected: CanonicalProject) {
-  const current = readAtKey(project, change.key);
-  const base = readAtKey(expected, change.key);
-  return current.exists === base.exists && (!base.exists || sameValue(current.value, base.value));
+function sameValueAtPath(left: CanonicalProject, right: CanonicalProject, change: AtomicHistoryChange) {
+  const a = readAtKey(left, change.key);
+  const b = readAtKey(right, change.key);
+  return a.exists === b.exists && (!a.exists || sameValue(a.value, b.value));
+}
+
+function sameWriter(left: Record<string, string>, right: Record<string, string>, key: string) {
+  return (left[key] ?? null) === (right[key] ?? null);
 }
 
 async function commitCloudEdit(requestedProject: CanonicalProject) {
-  if (!firestore || !cloudBaseProject || mode !== 'online' || !activeProjectId || cloudWriteInFlight) return;
-  const base = cloneValue(cloudBaseProject);
-  const requestedChanges = diffProjects(base, requestedProject);
+  if (!firestore || !cloudBaseDocument || mode !== 'online' || !activeProjectId || cloudWriteInFlight) return;
+  const base = cloneValue(cloudBaseDocument);
+  const requestedChanges = diffProjects(base.project, requestedProject);
   if (requestedChanges.length === 0) return;
   const mutationId = randomId(`mutation-${userId.slice(0, 8)}`);
   cloudWriteInFlight = true;
@@ -479,6 +477,7 @@ async function commitCloudEdit(requestedProject: CanonicalProject) {
   try {
     let committedBefore: CanonicalProject | null = null;
     let committedAfter: CanonicalProject | null = null;
+    let committedCloud: CloudProjectDocument | null = null;
     await runTransaction(firestore, async (transaction) => {
       const ref = doc(firestore!, CLOUD_COLLECTION, activeProjectId);
       const snapshot = await transaction.get(ref);
@@ -487,8 +486,14 @@ async function commitCloudEdit(requestedProject: CanonicalProject) {
       if (!cloud) throw new Error('The shared project is invalid.');
 
       for (const change of requestedChanges) {
-        if (!currentSideMatches(cloud.project, change, base)) {
+        if (!sameValueAtPath(cloud.project, base.project, change)
+          || !sameWriter(cloud.fieldWriters, base.fieldWriters, projectPath(change))) {
           throw new Error('A collaborator changed the same part of the project. Your edit was not applied.');
+        }
+      }
+      for (const key of guardEntityKeys(requestedChanges)) {
+        if (!sameWriter(cloud.entityWriters, base.entityWriters, key)) {
+          throw new Error('A collaborator modified an entity this structural edit depends on.');
         }
       }
 
@@ -504,20 +509,22 @@ async function commitCloudEdit(requestedProject: CanonicalProject) {
       requestedChanges.forEach((change) => { fieldWriters[projectPath(change)] = mutationId; });
       const entityWriters = { ...cloud.entityWriters };
       touchedEntityKeys(cloud.project, nextProject, requestedChanges).forEach((key) => { entityWriters[key] = mutationId; });
-      committedBefore = cloneValue(cloud.project);
-      committedAfter = cloneValue(nextProject);
-      transaction.set(ref, {
+      const nextCloud: CloudProjectDocument = {
         ...cloud,
         project: nextProject,
         revision: cloud.revision + 1,
         updatedAt: Date.now(),
         fieldWriters,
         entityWriters,
-      });
+      };
+      committedBefore = cloneValue(cloud.project);
+      committedAfter = cloneValue(nextProject);
+      committedCloud = cloneValue(nextCloud);
+      transaction.set(ref, nextCloud);
     });
 
-    if (committedBefore && committedAfter) {
-      cloudBaseProject = cloneValue(committedAfter);
+    if (committedBefore && committedAfter && committedCloud) {
+      cloudBaseDocument = cloneValue(committedCloud);
       activeProject = cloneValue(committedAfter);
       recordCommittedHistory(committedBefore, committedAfter, mutationId);
       connectionStatus = 'Online';
@@ -525,23 +532,28 @@ async function commitCloudEdit(requestedProject: CanonicalProject) {
   } catch (error) {
     connectionStatus = 'Conflict';
     window.alert(error instanceof Error ? error.message : 'The cloud edit could not be saved.');
-    if (cloudBaseProject) await applyRemoteSnapshot(cloudBaseProject);
+    if (cloudBaseDocument) await applyRemoteSnapshot(cloudBaseDocument.project);
   } finally {
     cloudWriteInFlight = false;
     renderProjectUi();
   }
 }
 
-function entityGuardMatches(cloud: CloudProjectDocument, entry: HistoryEntry) {
-  if (!entry.mutationId) return true;
-  return guardEntityKeys(entry.changes).every((key) => cloud.entityWriters[key] === entry.mutationId);
+function historyOwnershipMatches(cloud: CloudProjectDocument, entry: HistoryEntry) {
+  if (!entry.mutationId) return false;
+  const fieldsOwned = entry.changes.every((change) => cloud.fieldWriters[projectPath(change)] === entry.mutationId);
+  const entitiesOwned = guardEntityKeys(entry.changes).every((key) => cloud.entityWriters[key] === entry.mutationId);
+  return fieldsOwned && entitiesOwned;
 }
 
 async function applyCloudHistory(projectId: string, direction: HistoryDirection, entry: HistoryEntry) {
-  if (!firestore || !entry.mutationId) return { ok: false, reason: 'This history entry predates collaborative mutation tracking.' };
-  const inverseMutationId = randomId(`${direction}-${userId.slice(0, 8)}`);
+  if (!firestore || !entry.mutationId) {
+    return { ok: false, reason: 'This history entry predates collaborative mutation tracking.' };
+  }
+  const nextMutationId = randomId(`${direction}-${userId.slice(0, 8)}`);
   try {
     let resultProject: CanonicalProject | null = null;
+    let resultCloud: CloudProjectDocument | null = null;
     await runTransaction(firestore, async (transaction) => {
       const ref = doc(firestore!, CLOUD_COLLECTION, projectId);
       const snapshot = await transaction.get(ref);
@@ -549,11 +561,9 @@ async function applyCloudHistory(projectId: string, direction: HistoryDirection,
       const cloud = parseCloudDocument(snapshot.data());
       if (!cloud) throw new Error('The shared project is invalid.');
 
-      if (!entry.changes.every((change) => valueMatchesSide(cloud.project, change, direction))) {
-        throw new Error('Another collaborator changed a field affected by this action.');
-      }
-      if (direction === 'undo' && !entityGuardMatches(cloud, entry)) {
-        throw new Error('An entity created or removed by this action was modified by another collaborator.');
+      if (!historyOwnershipMatches(cloud, entry)
+        || !entry.changes.every((change) => valueMatchesSide(cloud.project, change, direction))) {
+        throw new Error('Another collaborator changed state affected by this history entry.');
       }
 
       let next: unknown = cloud.project;
@@ -567,23 +577,25 @@ async function applyCloudHistory(projectId: string, direction: HistoryDirection,
       if (graphIssue) throw new Error(graphIssue);
 
       const fieldWriters = { ...cloud.fieldWriters };
-      entry.changes.forEach((change) => { fieldWriters[projectPath(change)] = inverseMutationId; });
+      entry.changes.forEach((change) => { fieldWriters[projectPath(change)] = nextMutationId; });
       const entityWriters = { ...cloud.entityWriters };
-      touchedEntityKeys(cloud.project, nextProject, entry.changes).forEach((key) => { entityWriters[key] = inverseMutationId; });
-      transaction.set(ref, {
+      touchedEntityKeys(cloud.project, nextProject, entry.changes).forEach((key) => { entityWriters[key] = nextMutationId; });
+      const nextCloud: CloudProjectDocument = {
         ...cloud,
         project: nextProject,
         revision: cloud.revision + 1,
         updatedAt: Date.now(),
         fieldWriters,
         entityWriters,
-      });
+      };
+      transaction.set(ref, nextCloud);
       resultProject = cloneValue(nextProject);
+      resultCloud = cloneValue(nextCloud);
     });
-    if (!resultProject) return { ok: false, reason: 'The history transaction did not produce a project.' };
-    cloudBaseProject = cloneValue(resultProject);
+    if (!resultProject || !resultCloud) return { ok: false, reason: 'The history transaction did not produce a project.' };
+    cloudBaseDocument = cloneValue(resultCloud);
     activeProject = cloneValue(resultProject);
-    return { ok: true, project: resultProject, mutationId: inverseMutationId };
+    return { ok: true, project: resultProject, mutationId: nextMutationId };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'The shared project changed.' };
   }
@@ -622,29 +634,25 @@ window.addEventListener(PROJECT_SAVED_EVENT, (event) => {
 });
 
 function escapeHtml(value: string) {
-  return value.replace(/[&<>'"]/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
-  })[char]!);
+  return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]!);
 }
 
 function projectButton(meta: ProjectMeta, selected: boolean) {
-  return `<div class="project-manager-row${selected ? ' is-selected' : ''}" data-project-id="${escapeHtml(meta.id)}">
-    <button type="button" class="project-manager-select"><strong>${escapeHtml(meta.name)}</strong><small>${new Date(meta.updatedAt).toLocaleDateString()}</small></button>
-    <button type="button" class="project-manager-icon" data-project-action="rename" title="Rename">✎</button>
-    <button type="button" class="project-manager-icon danger" data-project-action="delete" title="Delete">×</button>
-  </div>`;
+  return `<div class="project-manager-row${selected ? ' is-selected' : ''}" data-project-id="${escapeHtml(meta.id)}"><button type="button" class="project-manager-select"><strong>${escapeHtml(meta.name)}</strong><small>${new Date(meta.updatedAt).toLocaleDateString()}</small></button><button type="button" class="project-manager-icon" data-project-action="rename" title="Rename">✎</button><button type="button" class="project-manager-icon danger" data-project-action="delete" title="Delete">×</button></div>`;
 }
 
 function renderProjectUi() {
   const panel = document.querySelector<HTMLElement>('.project-manager-panel');
   const trigger = document.querySelector<HTMLElement>('.project-manager-button');
+  document.body.classList.toggle('cloud-disconnected', mode === 'online' && connectionStatus === 'Disconnected');
   if (trigger) {
     const activeMeta = mode === 'local'
       ? localProjects.find((item) => item.id === activeProjectId)
       : cloudProjects.find((item) => item.id === activeProjectId);
-    trigger.querySelector('.project-manager-button-label')!.textContent = activeMeta?.name ?? 'Projects';
-    const status = trigger.querySelector('.project-manager-status')!;
-    status.textContent = mode === 'local' ? 'Local' : connectionStatus;
+    const label = trigger.querySelector<HTMLElement>('.project-manager-button-label');
+    const status = trigger.querySelector<HTMLElement>('.project-manager-status');
+    if (label) label.textContent = activeMeta?.name ?? 'Projects';
+    if (status) status.textContent = mode === 'local' ? 'Local' : connectionStatus;
   }
   if (!panel) return;
   panel.hidden = !projectPanelOpen;
@@ -652,19 +660,11 @@ function renderProjectUi() {
   const configText = settings.firebaseConfig ? JSON.stringify(settings.firebaseConfig, null, 2) : '';
   panel.innerHTML = `
     <div class="project-manager-head"><div><strong>Projects</strong><small>User ${escapeHtml(userId.slice(0, 8))}</small></div><button type="button" data-project-action="close">×</button></div>
-    <div class="project-manager-tabs">
-      <button type="button" data-project-mode="local" class="${mode === 'local' ? 'active' : ''}">Local</button>
-      <button type="button" data-project-mode="online" class="${mode === 'online' ? 'active' : ''}">Online</button>
-    </div>
+    <div class="project-manager-tabs"><button type="button" data-project-mode="local" class="${mode === 'local' ? 'active' : ''}">Local</button><button type="button" data-project-mode="online" class="${mode === 'online' ? 'active' : ''}">Online</button></div>
     ${mode === 'online' && !firestore ? `<div class="project-manager-config"><strong>Firebase configuration</strong><small>Trusted collaborators can use the same Firestore-enabled config.</small><textarea spellcheck="false" placeholder='{"apiKey":"...","projectId":"..."}'>${escapeHtml(configText)}</textarea><button type="button" data-project-action="connect">Connect Firebase</button></div>` : ''}
     ${mode === 'online' && firestore ? `<div class="project-manager-connection"><span>${escapeHtml(connectionStatus)}</span><button type="button" data-project-action="configure">Change Firebase</button></div>` : ''}
     <div class="project-manager-list">${list.length ? list.map((item) => projectButton(item, item.id === activeProjectId)).join('') : `<div class="project-manager-empty">${mode === 'online' && !firestore ? 'Connect Firebase to view cloud projects.' : 'No projects yet.'}</div>`}</div>
-    <div class="project-manager-actions">
-      <button type="button" data-project-action="new" ${mode === 'online' && !firestore ? 'disabled' : ''}>New</button>
-      <button type="button" data-project-action="duplicate" ${!activeProjectId || (mode === 'online' && !firestore) ? 'disabled' : ''}>Duplicate</button>
-      <button type="button" data-project-action="copy" ${!activeProjectId ? 'disabled' : ''}>${mode === 'local' ? 'Copy Online' : 'Copy Local'}</button>
-    </div>
-  `;
+    <div class="project-manager-actions"><button type="button" data-project-action="new" ${mode === 'online' && !firestore ? 'disabled' : ''}>New</button><button type="button" data-project-action="duplicate" ${!activeProjectId || (mode === 'online' && !firestore) ? 'disabled' : ''}>Duplicate</button><button type="button" data-project-action="copy" ${!activeProjectId || (mode === 'online' && !firestore) ? 'disabled' : ''}>${mode === 'local' ? 'Copy Online' : 'Copy Local'}</button></div>`;
 }
 
 function installProjectUi() {
@@ -674,30 +674,7 @@ function installProjectUi() {
   uiInstalled = true;
   const style = document.createElement('style');
   style.textContent = `
-    .project-manager-control { position: relative; display: inline-flex; }
-    .project-manager-button { max-width: 190px; display: inline-grid!important; grid-template-columns: 1fr auto; grid-template-rows: auto auto; column-gap: 8px; text-align: left; }
-    .project-manager-button-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .project-manager-status { grid-column: 1 / -1; font-size: 8px; opacity: .55; }
-    .project-manager-panel { position: absolute; top: calc(100% + 9px); right: 0; width: min(390px, calc(100vw - 24px)); max-height: min(650px, calc(100vh - 90px)); overflow: auto; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(14,17,23,.98); box-shadow: 0 20px 60px rgba(0,0,0,.45); color: #dfe4e9; z-index: 110; }
-    .project-manager-panel[hidden] { display:none; }
-    .project-manager-head, .project-manager-connection, .project-manager-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.08); }
-    .project-manager-head > div { display:grid; gap:2px; } .project-manager-head small,.project-manager-config small,.project-manager-select small { font-size:9px; color:#707987; }
-    .project-manager-head button,.project-manager-icon { border:0; background:transparent; color:#89919d; }
-    .project-manager-tabs { display:grid; grid-template-columns:1fr 1fr; gap:5px; padding:8px; }
-    .project-manager-tabs button,.project-manager-actions button,.project-manager-config button,.project-manager-connection button { border:1px solid rgba(255,255,255,.1); border-radius:8px; background:#151a22; color:#abb3be; padding:8px 10px; }
-    .project-manager-tabs button.active { color:#dfffb4; border-color:rgba(182,255,86,.28); background:rgba(182,255,86,.07); }
-    .project-manager-config { display:grid; gap:7px; padding:10px 12px; border-top:1px solid rgba(255,255,255,.07); border-bottom:1px solid rgba(255,255,255,.07); }
-    .project-manager-config textarea { min-height:130px; resize:vertical; border:1px solid rgba(255,255,255,.11); border-radius:8px; background:#0c1016; color:#cbd2db; padding:9px; font:10px/1.45 monospace; }
-    .project-manager-list { display:grid; gap:3px; padding:6px; max-height:315px; overflow:auto; }
-    .project-manager-row { display:grid; grid-template-columns:1fr 30px 30px; align-items:center; border-radius:8px; }
-    .project-manager-row.is-selected { background:rgba(182,255,86,.055); }
-    .project-manager-select { min-width:0; display:grid; gap:2px; padding:8px 9px; border:0; background:transparent; color:#cfd5dd; text-align:left; }
-    .project-manager-select strong { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
-    .project-manager-icon.danger:hover { color:#ff7769; }
-    .project-manager-empty { padding:24px 12px; text-align:center; color:#69727f; font-size:10px; }
-    .project-manager-actions { border-top:1px solid rgba(255,255,255,.08); border-bottom:0; justify-content:flex-start; flex-wrap:wrap; }
-    .project-manager-actions button:disabled { opacity:.35; }
-  `;
+    .project-manager-control{position:relative;display:inline-flex}.project-manager-button{max-width:190px;display:inline-grid!important;grid-template-columns:1fr auto;grid-template-rows:auto auto;column-gap:8px;text-align:left}.project-manager-button-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-manager-status{grid-column:1/-1;font-size:8px;opacity:.55}.project-manager-panel{position:absolute;top:calc(100% + 9px);right:0;width:min(390px,calc(100vw - 24px));max-height:min(650px,calc(100vh - 90px));overflow:auto;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(14,17,23,.98);box-shadow:0 20px 60px rgba(0,0,0,.45);color:#dfe4e9;z-index:110}.project-manager-panel[hidden]{display:none}.project-manager-head,.project-manager-connection,.project-manager-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}.project-manager-head>div{display:grid;gap:2px}.project-manager-head small,.project-manager-config small,.project-manager-select small{font-size:9px;color:#707987}.project-manager-head button,.project-manager-icon{border:0;background:transparent;color:#89919d}.project-manager-tabs{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:8px}.project-manager-tabs button,.project-manager-actions button,.project-manager-config button,.project-manager-connection button{border:1px solid rgba(255,255,255,.1);border-radius:8px;background:#151a22;color:#abb3be;padding:8px 10px}.project-manager-tabs button.active{color:#dfffb4;border-color:rgba(182,255,86,.28);background:rgba(182,255,86,.07)}.project-manager-config{display:grid;gap:7px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.07);border-bottom:1px solid rgba(255,255,255,.07)}.project-manager-config textarea{min-height:130px;resize:vertical;border:1px solid rgba(255,255,255,.11);border-radius:8px;background:#0c1016;color:#cbd2db;padding:9px;font:10px/1.45 monospace}.project-manager-list{display:grid;gap:3px;padding:6px;max-height:315px;overflow:auto}.project-manager-row{display:grid;grid-template-columns:1fr 30px 30px;align-items:center;border-radius:8px}.project-manager-row.is-selected{background:rgba(182,255,86,.055)}.project-manager-select{min-width:0;display:grid;gap:2px;padding:8px 9px;border:0;background:transparent;color:#cfd5dd;text-align:left}.project-manager-select strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:10px}.project-manager-icon.danger:hover{color:#ff7769}.project-manager-empty{padding:24px 12px;text-align:center;color:#69727f;font-size:10px}.project-manager-actions{border-top:1px solid rgba(255,255,255,.08);border-bottom:0;justify-content:flex-start;flex-wrap:wrap}.project-manager-actions button:disabled{opacity:.35}.cloud-disconnected .react-flow,.cloud-disconnected .workspace-main{pointer-events:none;opacity:.78}`;
   document.head.appendChild(style);
 
   const control = document.createElement('div');
@@ -716,15 +693,16 @@ function installProjectUi() {
     if (modeButton) {
       const nextMode = modeButton.dataset.projectMode as StorageMode;
       if (nextMode === 'local') {
-        const meta = selectedLocalMeta();
-        if (meta) await switchLocalProject(meta.id);
+        const local = selectedLocalMeta();
+        if (local) await switchLocalProject(local.id);
       } else if (!firestore) {
         mode = 'online';
         renderProjectUi();
       } else if (cloudProjects.length) {
-        await switchOnlineProject(settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
+        const selected = settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
           ? settings.selectedOnlineProjectId
-          : cloudProjects[0].id);
+          : cloudProjects[0].id;
+        await switchOnlineProject(selected);
       } else {
         mode = 'online';
         renderProjectUi();
@@ -763,6 +741,7 @@ function installProjectUi() {
         await configureFirebase(config);
         mode = 'online';
         if (cloudProjects.length) await switchOnlineProject(cloudProjects[0].id);
+        else renderProjectUi();
       } else if (action === 'configure') {
         stopCloudSubscription();
         if (firebaseApp) await deleteApp(firebaseApp);
@@ -787,21 +766,22 @@ function installProjectUi() {
 
 async function initializeRuntime() {
   ensureLocalMigration();
-  const localMeta = selectedLocalMeta()!;
-  settings = { ...settings, selectedLocalProjectId: localMeta.id };
-  activeProjectId = localMeta.id;
-  const localProject = readLocalProject(localMeta.id) ?? readWorkingProject();
-  saveLocalProject(localMeta.id, localProject);
-  await applyWorkingProject(localProject, `local:${localMeta.id}`, null);
+  const local = selectedLocalMeta();
+  if (!local) return;
+  settings = { ...settings, selectedLocalProjectId: local.id };
+  activeProjectId = local.id;
+  const project = readLocalProject(local.id) ?? readWorkingProject();
+  saveLocalProject(local.id, project);
+  await applyWorkingProject(project, `local:${local.id}`, null);
 
   if (settings.firebaseConfig) {
     try {
       await configureFirebase(settings.firebaseConfig);
       if (settings.mode === 'online' && cloudProjects.length) {
-        const selectedId = settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
+        const selected = settings.selectedOnlineProjectId && cloudProjects.some((item) => item.id === settings.selectedOnlineProjectId)
           ? settings.selectedOnlineProjectId
           : cloudProjects[0].id;
-        await switchOnlineProject(selectedId);
+        await switchOnlineProject(selected);
       }
     } catch {
       connectionStatus = 'Firebase unavailable';
