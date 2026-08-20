@@ -7,12 +7,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: validate-pages-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -64,20 +58,3 @@ jobs:
           ASSET=$(cat /tmp/skill-tree-asset-path)
           test -n "$ASSET"
           curl --fail --silent --show-error "http://127.0.0.1:4173${ASSET}" -o /dev/null
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy-validation:
-    if: github.event_name == 'pull_request' && github.head_ref == 'ci/verify-online-main'
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy validated artifact
-        id: deployment
-        uses: actions/deploy-pages@v4
