@@ -259,6 +259,10 @@ export function setHistoryExternalRecording(enabled: boolean) {
   externalRecording = enabled;
 }
 
+export function getHistoryProject() {
+  return lastProject ? cloneValue(lastProject) : null;
+}
+
 export function recordCommittedHistory(before: CanonicalProject, after: CanonicalProject, collaboration: CollaborationHistoryMeta) {
   lastProject = cloneValue(after);
   appendChanges(diffProjects(before, after), collaboration);
