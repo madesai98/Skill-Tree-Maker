@@ -7,6 +7,7 @@ import {
   type ProjectMeta,
 } from './cloudStore';
 import { rebaseQueuedProject } from './collaboration';
+import { parseFirebaseConfigInput } from './firebaseConfig';
 import {
   HISTORY_APPLY_EVENT,
   flushHistoryWrites,
@@ -457,7 +458,7 @@ function renderProjectUi() {
     <div class="project-manager-head"><div><strong>Projects</strong><small>User ${escapeHtml(userId.slice(0, 8))}</small></div><button type="button" data-project-action="close">×</button></div>
     <div class="project-manager-tabs"><button type="button" data-project-mode="local" class="${mode === 'local' ? 'active' : ''}">Local</button><button type="button" data-project-mode="online" class="${mode === 'online' ? 'active' : ''}">Online</button></div>
     ${cloudWriteInFlight ? '<div class="project-manager-busy">Saving the current cloud edits…</div>' : ''}
-    ${mode === 'online' && !cloudStore.connected ? `<div class="project-manager-config"><strong>Firebase configuration</strong><small>Trusted collaborators can use the same Firestore-enabled config.</small><textarea spellcheck="false" placeholder='{"apiKey":"...","projectId":"..."}'>${escapeHtml(configText)}</textarea><button type="button" data-project-action="connect">Connect Firebase</button></div>` : ''}
+    ${mode === 'online' && !cloudStore.connected ? `<div class="project-manager-config"><strong>Firebase configuration</strong><small>Paste the Firebase web config object or the full <code>const firebaseConfig = { ... };</code> snippet exactly as Firebase gives it to you.</small><textarea spellcheck="false" placeholder='const firebaseConfig = {\n  apiKey: "...",\n  projectId: "..."\n};'>${escapeHtml(configText)}</textarea><button type="button" data-project-action="connect">Connect Firebase</button></div>` : ''}
     ${mode === 'online' && cloudStore.connected ? `<div class="project-manager-connection"><span>${escapeHtml(connectionStatus)}</span><button type="button" data-project-action="configure">Change Firebase</button></div>` : ''}
     <div class="project-manager-list">${list.length ? list.map((item) => projectButton(item, item.id === activeProjectId)).join('') : `<div class="project-manager-empty">${mode === 'online' && !cloudStore.connected ? 'Connect Firebase to view cloud projects.' : 'No projects yet.'}</div>`}</div>
     <div class="project-manager-actions"><button type="button" data-project-action="new" ${mode === 'online' && !cloudStore.connected ? 'disabled' : ''}>New</button><button type="button" data-project-action="duplicate" ${!activeProjectId || (mode === 'online' && !cloudStore.connected) ? 'disabled' : ''}>Duplicate</button><button type="button" data-project-action="copy" ${!activeProjectId || (mode === 'local' && !cloudStore.connected) ? 'disabled' : ''}>${mode === 'local' ? 'Copy Online' : 'Copy Local'}</button></div>`;
@@ -537,8 +538,7 @@ function installProjectUi() {
       } else if (action === 'connect') {
         const textarea = control.querySelector<HTMLTextAreaElement>('.project-manager-config textarea');
         if (!textarea) return;
-        const config = JSON.parse(textarea.value) as FirebaseOptions;
-        if (!config.projectId || !config.apiKey) throw new Error('The Firebase config needs at least apiKey and projectId.');
+        const config = parseFirebaseConfigInput(textarea.value);
         await configureFirebase(config);
         mode = 'online';
         settings = { ...settings, mode: 'online' };
