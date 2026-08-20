@@ -48,6 +48,22 @@ export type { FirebaseOptions } from 'firebase/app';
 const CLOUD_COLLECTION = 'skillTreeMakerProjects';
 const FIREBASE_APP_NAME = 'skill-tree-maker-online';
 
+type CloudCommitOptions = {
+  overwriteConflicts?: boolean;
+};
+
+export type HistoryOverwriteScope = {
+  paths: string[];
+  entities: string[];
+};
+
+export class CloudConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CloudConflictError';
+  }
+}
+
 export type ProjectMeta = {
   id: string;
   name: string;
@@ -73,6 +89,7 @@ export type CloudCommitResult = {
   mutationId: string;
   changes: AtomicHistoryChange[];
   history: CollaborationHistoryMeta;
+  overwriteScope?: HistoryOverwriteScope;
 };
 
 function randomId(prefix: string) {
@@ -160,6 +177,91 @@ function fieldGuardSnapshot(fieldWriters: Record<string, string>, changes: Atomi
 
 function touchGuardSnapshot(entityTouches: Record<string, EntityTouchVector>, changes: AtomicHistoryChange[]) {
   return Object.fromEntries(guardEntityKeys(changes).map((key) => [key, cloneValue(entityTouches[key] ?? {})]));
+}
+
+function entityKeyForChange(change: AtomicHistoryChange) {
+  const [collection, id] = change.key;
+  if (!collection || !id) return null;
+  const singular = collection === 'nodes'
+    ? 'node'
+    : collection === 'edges'
+      ? 'edge'
+      : collection === 'stats'
+        ? 'stat'
+        : collection === 'currencies'
+          ? 'currency'
+          : null;
+  return singular ? `${singular}:${id}` : null;
+}
+
+function collectionWasCleared(
+  base: CanonicalProject,
+  requested: CanonicalProject,
+  collectionName: 'nodes' | 'edges' | 'stats' | 'currencies',
+) {
+  return base[collectionName].length > 0 && requested[collectionName].length === 0;
+}
+
+function applyOverwriteIntents(
+  current: CanonicalProject,
+  base: CanonicalProject,
+  requested: CanonicalProject,
+  changes: AtomicHistoryChange[],
+) {
+  let next: unknown = current;
+  for (const change of changes) next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
+  const project = cloneValue(next as CanonicalProject);
+
+  const collections = ['nodes', 'edges', 'stats', 'currencies'] as const;
+  for (const collectionName of collections) {
+    if (collectionWasCleared(base, requested, collectionName)) project[collectionName] = [];
+  }
+
+  const nodeIds = new Set(project.nodes.flatMap((node) => typeof node.id === 'string' ? [node.id] : []));
+  project.edges = project.edges.filter((edge) =>
+    typeof edge.source === 'string'
+    && typeof edge.target === 'string'
+    && nodeIds.has(edge.source)
+    && nodeIds.has(edge.target));
+
+  return project;
+}
+
+function overwriteScopeForChanges(changes: AtomicHistoryChange[]): HistoryOverwriteScope {
+  const paths = new Set<string>();
+  const entities = new Set<string>();
+  for (const change of changes) {
+    paths.add(projectPath(change));
+    if (change.key.length === 2) {
+      const key = entityKeyForChange(change);
+      if (key) entities.add(key);
+    }
+  }
+  return { paths: [...paths], entities: [...entities] };
+}
+
+function historyEntryAffectedByOverwrite(entry: HistoryEntry, scope: HistoryOverwriteScope) {
+  const paths = new Set(scope.paths);
+  const entities = new Set(scope.entities);
+  if (entry.changes.some((change) => paths.has(projectPath(change)))) return true;
+  if (!entities.size) return false;
+  if (entry.changes.some((change) => {
+    const key = entityKeyForChange(change);
+    return Boolean(key && entities.has(key));
+  })) return true;
+  return guardEntityKeys(entry.changes).some((key) => entities.has(key));
+}
+
+function pruneHistoryStateForOverwrite(state: HistoryState, scope: HistoryOverwriteScope): HistoryState {
+  const cursor = Math.max(-1, Math.min(state.cursor, state.entries.length - 1));
+  const kept: HistoryEntry[] = [];
+  let keptThroughCursor = 0;
+  state.entries.forEach((entry, index) => {
+    if (historyEntryAffectedByOverwrite(entry, scope)) return;
+    kept.push(entry);
+    if (index <= cursor) keptThroughCursor += 1;
+  });
+  return { entries: kept.slice(-50), cursor: Math.min(keptThroughCursor - 1, kept.length - 1) };
 }
 
 export class FirestoreProjectStore {
@@ -275,10 +377,39 @@ export class FirestoreProjectStore {
     });
   }
 
-  async commitProject(projectId: string, base: CloudProjectDocument, requested: CanonicalProject, userId: string): Promise<CloudCommitResult | null> {
+  async pruneHistoriesForOverwrite(projectId: string, scope: HistoryOverwriteScope) {
+    if (!scope.paths.length && !scope.entities.length) return;
     const db = this.requireDb();
-    const changes = diffProjects(base.project, requested);
-    if (!changes.length) return null;
+    const histories = await getDocs(collection(db, CLOUD_COLLECTION, projectId, 'histories'));
+    await Promise.all(histories.docs.map((history) => runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(history.ref);
+      if (!snapshot.exists()) return;
+      const data = snapshot.data() as Partial<HistoryState>;
+      const state: HistoryState = {
+        entries: Array.isArray(data.entries) ? data.entries as HistoryEntry[] : [],
+        cursor: typeof data.cursor === 'number' ? data.cursor : -1,
+      };
+      const next = pruneHistoryStateForOverwrite(state, scope);
+      if (next.entries.length === state.entries.length && next.cursor === state.cursor) return;
+      transaction.set(history.ref, {
+        entries: next.entries,
+        cursor: next.cursor,
+        updatedAt: Date.now(),
+      }, { merge: true });
+    })));
+  }
+
+  async commitProject(
+    projectId: string,
+    base: CloudProjectDocument,
+    requested: CanonicalProject,
+    userId: string,
+    options: CloudCommitOptions = {},
+  ): Promise<CloudCommitResult | null> {
+    const db = this.requireDb();
+    const intendedChanges = diffProjects(base.project, requested);
+    if (!intendedChanges.length) return null;
+    const overwriteConflicts = options.overwriteConflicts === true;
     const mutationId = randomId(`mutation-${userId.slice(0, 8)}`);
     let result: CloudCommitResult | null = null;
 
@@ -289,28 +420,38 @@ export class FirestoreProjectStore {
       const cloud = parseCloudDocument(snapshot.data());
       if (!cloud) throw new Error('The shared project is invalid.');
 
-      for (const change of changes) {
-        if (!sameValueAtPath(cloud.project, base.project, change)
-          || !sameWriter(cloud.fieldWriters, base.fieldWriters, projectPath(change))) {
-          throw new Error('A collaborator changed the same part of the project. Your edit was not applied.');
-        }
-      }
-      for (const key of guardEntityKeys(changes)) {
-        const baseHasVector = Object.prototype.hasOwnProperty.call(base.entityTouches, key);
-        if (baseHasVector) {
-          if (!foreignTouchesMatch(cloud.entityTouches[key], base.entityTouches[key], userId)) {
-            throw new Error('A collaborator modified an entity this structural edit depends on.');
+      if (!overwriteConflicts) {
+        for (const change of intendedChanges) {
+          if (!sameValueAtPath(cloud.project, base.project, change)
+            || !sameWriter(cloud.fieldWriters, base.fieldWriters, projectPath(change))) {
+            throw new CloudConflictError('A collaborator changed the same part of the project while you were editing.');
           }
-        } else if (!sameWriter(cloud.entityWriters, base.entityWriters, key)) {
-          throw new Error('A collaborator modified an entity this structural edit depends on.');
+        }
+        for (const key of guardEntityKeys(intendedChanges)) {
+          const baseHasVector = Object.prototype.hasOwnProperty.call(base.entityTouches, key);
+          if (baseHasVector) {
+            if (!foreignTouchesMatch(cloud.entityTouches[key], base.entityTouches[key], userId)) {
+              throw new CloudConflictError('A collaborator modified an entity this structural edit depends on.');
+            }
+          } else if (!sameWriter(cloud.entityWriters, base.entityWriters, key)) {
+            throw new CloudConflictError('A collaborator modified an entity this structural edit depends on.');
+          }
         }
       }
 
-      let next: unknown = cloud.project;
-      for (const change of changes) next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
-      const nextProject = next as CanonicalProject;
+      let nextProject: CanonicalProject;
+      if (overwriteConflicts) {
+        nextProject = applyOverwriteIntents(cloud.project, base.project, requested, intendedChanges);
+      } else {
+        let next: unknown = cloud.project;
+        for (const change of intendedChanges) next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
+        nextProject = next as CanonicalProject;
+      }
+
       const graphIssue = validateProjectGraph(nextProject);
       if (graphIssue) throw new Error(graphIssue);
+      const changes = diffProjects(cloud.project, nextProject);
+      if (!changes.length) return;
 
       const fieldWriters = { ...cloud.fieldWriters };
       for (const change of changes) fieldWriters[projectPath(change)] = mutationId;
@@ -340,6 +481,7 @@ export class FirestoreProjectStore {
           fieldGuards: fieldGuardSnapshot(fieldWriters, changes),
           entityTouchGuards: touchGuardSnapshot(entityTouches, changes),
         },
+        ...(overwriteConflicts ? { overwriteScope: overwriteScopeForChanges(changes) } : {}),
       };
     });
 
