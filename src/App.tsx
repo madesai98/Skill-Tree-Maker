@@ -1282,13 +1282,11 @@ function SkillTreeEditor() {
   };
 
   const addIconifyAsset = async (iconName: string, svg: string) => {
-    let added = false;
-    setIcons((current) => {
-      if (current.some((icon) => icon.name === iconName)) return current;
-      added = true;
-      return [...current, { id: uid('icon'), name: iconName, svg }];
-    });
-    if (added) showNotice(`${iconName} added from Iconify.`);
+    if (icons.some((icon) => icon.name === iconName)) return;
+    setIcons((current) => current.some((icon) => icon.name === iconName)
+      ? current
+      : [...current, { id: uid('icon'), name: iconName, svg }]);
+    showNotice(`${iconName} added from Iconify.`);
   };
 
   const replaceIconAsset = async (iconId: string, file: File) => {
