@@ -1,5 +1,4 @@
 import './history';
-import './firebaseConfigInput';
 import './projectRuntime';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
