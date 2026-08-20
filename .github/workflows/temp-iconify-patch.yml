@@ -1,0 +1,55 @@
+name: Temporary Iconify editor patch
+on:
+  push:
+    branches: [feat/iconify-icon-search]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/iconify-icon-search
+          fetch-depth: 0
+      - name: Wire Iconify search into Icon Pool
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/App.tsx')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected one match, found {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "import { IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';",
+              "import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';",
+          )
+
+          replace_once(
+              """  const addIconAsset = async (file: File) => {\n    const svg = await parseIconFile(file);\n    if (!svg) return null;\n    const id = uid('icon');\n    setIcons((current) => [...current, { id, name: iconNameFromFile(file), svg }]);\n    showNotice('SVG added to the icon pool.');\n    return id;\n  };\n\n  const replaceIconAsset = async (iconId: string, file: File) => {""",
+              """  const addIconAsset = async (file: File) => {\n    const svg = await parseIconFile(file);\n    if (!svg) return null;\n    const id = uid('icon');\n    setIcons((current) => [...current, { id, name: iconNameFromFile(file), svg }]);\n    showNotice('SVG added to the icon pool.');\n    return id;\n  };\n\n  const addIconifyAsset = async (iconName: string, svg: string) => {\n    let added = false;\n    setIcons((current) => {\n      if (current.some((icon) => icon.name === iconName)) return current;\n      added = true;\n      return [...current, { id: uid('icon'), name: iconName, svg }];\n    });\n    if (added) showNotice(`${iconName} added from Iconify.`);\n  };\n\n  const replaceIconAsset = async (iconId: string, file: File) => {""",
+          )
+
+          replace_once(
+              """          </div>\n\n          {icons.length === 0 ? (\n            <div className=\"icon-pool-empty\"><h3>No SVG icons yet</h3><p>Add an SVG here or upload one directly from a stat group, stat item, or currency.</p></div>""",
+              """          </div>\n\n          <IconifySearch icons={icons} onImport={addIconifyAsset} />\n\n          {icons.length === 0 ? (\n            <div className=\"icon-pool-empty\"><h3>No saved SVG icons yet</h3><p>Search Iconify above, add an SVG here, or upload one directly from a stat group, stat item, or currency.</p></div>""",
+          )
+
+          path.write_text(text)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- src/App.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m "Wire Iconify search into Icon Pool"
+          git push origin HEAD:feat/iconify-icon-search
