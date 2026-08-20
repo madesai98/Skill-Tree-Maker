@@ -9,6 +9,7 @@ export type NodeLabelInput = {
   id: string;
   position: { x: number; y: number };
   name: string;
+  currency: { symbol: string; amount: number } | null;
   effects: NodeLabelEffectInput[];
 };
 
@@ -24,6 +25,7 @@ export type NodeLabelView = {
   top: number;
   width: number;
   align: 'left' | 'center' | 'right';
+  currency: string | null;
   name: string | null;
   effects: NodeLabelEffectView[];
 };
@@ -62,6 +64,12 @@ function formatNumber(value: number) {
     return value.toPrecision(4);
   }
   return Number(value.toFixed(6)).toString();
+}
+
+function formatCurrency(currency: NonNullable<NodeLabelInput['currency']>) {
+  const symbol = currency.symbol.trim();
+  const amount = formatNumber(currency.amount);
+  return `${symbol} ${amount}`.trim();
 }
 
 function statTarget(groupName: string, statName: string) {
@@ -116,16 +124,19 @@ function estimatedTextWidth(text: string, nameLine: boolean) {
   return width * (nameLine ? 1.06 : 1) + 2;
 }
 
-function estimateLabelSize(name: string | null, effects: NodeLabelEffectView[]) {
+function estimateLabelSize(currency: string | null, name: string | null, effects: NodeLabelEffectView[]) {
   const widths = [
+    ...(currency ? [estimatedTextWidth(currency, false)] : []),
     ...(name ? [estimatedTextWidth(name, true)] : []),
     ...effects.map((effect) => estimatedTextWidth(effect.text, false)),
   ];
   const width = Math.max(24, Math.ceil(Math.max(...widths, 0)));
+  const currencyHeight = currency ? 13 : 0;
   const nameHeight = name ? 14 : 0;
   const effectHeight = effects.length * 13;
-  const sectionGap = name && effects.length ? 3 : 0;
-  return { width, height: Math.max(1, nameHeight + sectionGap + effectHeight) };
+  const sectionCount = Number(Boolean(currency)) + Number(Boolean(name)) + Number(effects.length > 0);
+  const sectionGap = Math.max(0, sectionCount - 1) * 3;
+  return { width, height: Math.max(1, currencyHeight + nameHeight + sectionGap + effectHeight) };
 }
 
 function expandRect(rect: Rect, amount: number): Rect {
@@ -212,9 +223,9 @@ function candidateRect(center: Point, width: number, height: number, direction: 
 export function buildNodeLabelLayout(
   nodes: NodeLabelInput[],
   edges: LayoutEdge[],
-  options: { showNames: boolean; showStats: boolean },
+  options: { showCurrency: boolean; showNames: boolean; showStats: boolean },
 ): ReadonlyMap<string, NodeLabelView> {
-  if (!options.showNames && !options.showStats) return new Map();
+  if (!options.showCurrency && !options.showNames && !options.showStats) return new Map();
 
   const centerMap = new Map(nodes.map((node) => [node.id, nodeCenter(node)]));
   const edgeSegments = edges.flatMap((edge) => {
@@ -229,11 +240,12 @@ export function buildNodeLabelLayout(
   }
 
   const prepared = nodes.flatMap((node) => {
+    const currency = options.showCurrency && node.currency ? formatCurrency(node.currency) : null;
     const name = options.showNames && node.name.trim() ? node.name.trim() : null;
     const effects = options.showStats ? node.effects.map(formatEffect) : [];
-    if (!name && effects.length === 0) return [];
-    const size = estimateLabelSize(name, effects);
-    return [{ node, name, effects, ...size }];
+    if (!currency && !name && effects.length === 0) return [];
+    const size = estimateLabelSize(currency, name, effects);
+    return [{ node, currency, name, effects, ...size }];
   }).sort((a, b) => {
     const constraintA = (degree.get(a.node.id) ?? 0) * 1000 + a.width + a.height;
     const constraintB = (degree.get(b.node.id) ?? 0) * 1000 + b.width + b.height;
@@ -243,7 +255,7 @@ export function buildNodeLabelLayout(
   const result = new Map<string, NodeLabelView>();
   const placedRects: Rect[] = [];
 
-  for (const { node, name, effects, width, height } of prepared) {
+  for (const { node, currency, name, effects, width, height } of prepared) {
     const center = centerMap.get(node.id)!;
     let best: { rect: Rect; direction: Direction; score: number } | null = null;
 
@@ -280,6 +292,7 @@ export function buildNodeLabelLayout(
       top: best.rect.top - node.position.y,
       width,
       align: best.direction.align,
+      currency,
       name,
       effects,
     });
