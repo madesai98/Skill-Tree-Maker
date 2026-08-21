@@ -1,10 +1,8 @@
 import type { EntityTouchVector } from './history';
 import {
   applyAtKey,
+  cloneValue,
   diffProjects,
-  guardEntityKeys,
-  readAtKey,
-  sameValue,
   validateProjectGraph,
   type AtomicHistoryChange,
   type CanonicalProject,
@@ -26,7 +24,14 @@ export function projectPath(change: AtomicHistoryChange) {
   return change.key.join('\u001f');
 }
 
-export function foreignTouchesMatch(current: EntityTouchVector | undefined, expected: EntityTouchVector | undefined, ownerId: string) {
+// Retained for compatibility with older persisted metadata and any callers that still
+// inspect touch vectors. Shared linear history no longer uses this to permit or reject
+// undo/redo operations.
+export function foreignTouchesMatch(
+  current: EntityTouchVector | undefined,
+  expected: EntityTouchVector | undefined,
+  ownerId: string,
+) {
   const users = new Set([...Object.keys(current ?? {}), ...Object.keys(expected ?? {})]);
   for (const user of users) {
     if (user === ownerId) continue;
@@ -35,55 +40,47 @@ export function foreignTouchesMatch(current: EntityTouchVector | undefined, expe
   return true;
 }
 
-function changeMatchesOldValue(project: CanonicalProject, change: AtomicHistoryChange) {
-  const actual = readAtKey(project, change.key);
-  return actual.exists === change.oldExists && (!change.oldExists || sameValue(actual.value, change.oldValue));
+function removeDanglingEdges(project: CanonicalProject) {
+  const next = cloneValue(project);
+  const nodeIds = new Set(next.nodes.flatMap((node) => typeof node.id === 'string' ? [node.id] : []));
+  next.edges = next.edges.filter((edge) =>
+    typeof edge.source === 'string'
+    && typeof edge.target === 'string'
+    && nodeIds.has(edge.source)
+    && nodeIds.has(edge.target));
+  return next;
 }
 
-function applyChangeTargets(project: CanonicalProject, changes: AtomicHistoryChange[]) {
-  let next: unknown = project;
+/**
+ * Rebase edits that were made locally while an earlier cloud write was in flight.
+ *
+ * The old implementation rejected this rebase when field-writer/entity-touch guards
+ * changed and then opened an overwrite/cancel dialog. With one shared linear timeline,
+ * queued edits instead become the next atomic transaction: only the delta made after the
+ * submitted project is applied to the newest server project, preserving unrelated remote
+ * work and giving same-field edits ordinary last-writer-wins ordering.
+ */
+export function rebaseQueuedProject(
+  server: WriterDocument,
+  _base: WriterDocument,
+  submitted: CanonicalProject,
+  latestLocal: CanonicalProject,
+  _committed: CommittedMutation,
+  _ownerId: string,
+): { ok: true; project: CanonicalProject; changes: AtomicHistoryChange[] } | { ok: false; reason: string } {
+  const changes = diffProjects(submitted, latestLocal);
+  if (!changes.length) return { ok: true, project: cloneValue(server.project), changes };
+
+  let next: unknown = server.project;
   for (const change of changes) {
     next = applyAtKey(next, change.key, change.newExists, change.newValue, change.newIndex);
   }
-  return next as CanonicalProject;
-}
-
-export function rebaseQueuedProject(
-  server: WriterDocument,
-  base: WriterDocument,
-  submitted: CanonicalProject,
-  latestLocal: CanonicalProject,
-  committed: CommittedMutation,
-  ownerId: string,
-): { ok: true; project: CanonicalProject; changes: AtomicHistoryChange[] } | { ok: false; reason: string } {
-  const changes = diffProjects(submitted, latestLocal);
-  if (!changes.length) return { ok: true, project: server.project, changes };
-  const committedPaths = new Set(committed.changes.map(projectPath));
-
-  for (const change of changes) {
-    if (!changeMatchesOldValue(server.project, change)) {
-      return { ok: false, reason: 'A collaborator changed a field used by a queued edit.' };
-    }
-    const path = projectPath(change);
-    const expectedWriter = committedPaths.has(path) ? committed.mutationId : base.fieldWriters[path];
-    if ((server.fieldWriters[path] ?? null) !== (expectedWriter ?? null)) {
-      return { ok: false, reason: 'A collaborator changed a field used by a queued edit.' };
-    }
-  }
-
-  for (const key of guardEntityKeys(changes)) {
-    if (Object.prototype.hasOwnProperty.call(base.entityTouches, key)) {
-      if (!foreignTouchesMatch(server.entityTouches[key], base.entityTouches[key], ownerId)) {
-        return { ok: false, reason: 'A collaborator touched an entity required by a queued structural edit.' };
-      }
-    } else if ((server.entityWriters[key] ?? null) !== (base.entityWriters[key] ?? null)
-      && server.entityWriters[key] !== committed.mutationId) {
-      return { ok: false, reason: 'A collaborator touched an entity required by a queued structural edit.' };
-    }
-  }
-
-  const rebased = applyChangeTargets(server.project, changes);
+  const rebased = removeDanglingEdges(next as CanonicalProject);
   const graphIssue = validateProjectGraph(rebased);
-  if (graphIssue) return { ok: false, reason: graphIssue };
+  if (graphIssue) {
+    // Throwing routes this through the normal save-error path. We intentionally do not
+    // return a conflict result because that path presents the retired overwrite dialog.
+    throw new Error(graphIssue);
+  }
   return { ok: true, project: rebased, changes };
 }
