@@ -1,0 +1,399 @@
+name: Temporary skill node icon UI patch
+on:
+  push:
+    branches: [feat/skill-node-icon-ui]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/skill-node-icon-ui
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Patch node appearance and currency presentation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          app = Path('src/App.tsx')
+          text = app.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              if old not in text:
+                  raise SystemExit(f'missing {label}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, type IconAsset } from './iconPool';",
+              "import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, svgDataUrl, type IconAsset } from './iconPool';",
+              'iconPool import',
+          )
+
+          replace_once(
+              "type SkillNodeData = {\n  name: string;\n  cost: SkillCost;\n  upgrades: UpgradeEffect[];\n};",
+              "type SkillNodeData = {\n  name: string;\n  cost: SkillCost;\n  upgrades: UpgradeEffect[];\n  primaryIconId: string | null;\n  secondaryIconId: string | null;\n  secondaryColor: string | null;\n};\n\ntype ResolvedSkillAppearance = {\n  primaryIconId: string | null;\n  secondaryIconId: string | null;\n  secondaryColor: string;\n};\n\ntype SkillNodeVisual = ResolvedSkillAppearance & {\n  primaryIcon: IconAsset | null;\n  secondaryIcon: IconAsset | null;\n  currencyIcon: IconAsset | null;\n  currencyColor: string;\n};",
+              'SkillNodeData type',
+          )
+
+          replace_once(
+              "  nodeLabels: ReadonlyMap<string, NodeLabelView>;\n};",
+              "  nodeLabels: ReadonlyMap<string, NodeLabelView>;\n  nodeVisuals: ReadonlyMap<string, SkillNodeVisual>;\n};",
+              'interaction context',
+          )
+
+          # Starter nodes need explicit nullable overrides.
+          text, count = re.subn(
+              r"(name: '[^']+',\n      cost: \{ currencyId: '[^']+', amount: [^}]+ \},\n      upgrades: \[[^\n]+\],)(\n    },)",
+              r"\1\n      primaryIconId: null,\n      secondaryIconId: null,\n      secondaryColor: null,\2",
+              text,
+          )
+          if count != 4:
+              raise SystemExit(f'expected 4 starter node patches, got {count}')
+
+          replace_once(
+              "function normalizeColor(value: unknown, fallback = '#b6ff56') {\n  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;\n}",
+              "function normalizeColor(value: unknown, fallback = '#b6ff56') {\n  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;\n}\n\nfunction normalizeOptionalColor(value: unknown) {\n  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : null;\n}\n\nfunction resolveSkillAppearance(\n  data: SkillNodeData,\n  statMap: ReadonlyMap<string, StatDefinition>,\n  iconIds: ReadonlySet<string>,\n): ResolvedSkillAppearance {\n  const firstStat = data.upgrades.length > 0 ? statMap.get(data.upgrades[0].statId) : undefined;\n  const primaryCandidate = data.primaryIconId ?? firstStat?.iconId ?? null;\n  const secondaryCandidate = data.secondaryIconId ?? firstStat?.groupIconId ?? null;\n  return {\n    primaryIconId: primaryCandidate && iconIds.has(primaryCandidate) ? primaryCandidate : null,\n    secondaryIconId: secondaryCandidate && iconIds.has(secondaryCandidate) ? secondaryCandidate : null,\n    secondaryColor: data.secondaryColor ?? (firstStat ? normalizeColor(firstStat.groupColor, '#ffffff') : '#ffffff'),\n  };\n}\n\nfunction MaskedSvgIcon({ icon, color, className }: { icon: IconAsset | null | undefined; color: string; className: string }) {\n  if (!icon) return null;\n  const url = `url(\"${svgDataUrl(icon.svg)}\")`;\n  return (\n    <span\n      className={className}\n      aria-hidden=\"true\"\n      style={{\n        backgroundColor: color,\n        WebkitMaskImage: url,\n        maskImage: url,\n        WebkitMaskPosition: 'center',\n        maskPosition: 'center',\n        WebkitMaskRepeat: 'no-repeat',\n        maskRepeat: 'no-repeat',\n        WebkitMaskSize: 'contain',\n        maskSize: 'contain',\n      }}\n    />\n  );\n}",
+              'color helpers',
+          )
+
+          replace_once(
+              "      data: {\n        name: typeof rawData.name === 'string' ? rawData.name : `Skill ${index + 1}`,\n        cost,\n        upgrades,\n      },",
+              "      data: {\n        name: typeof rawData.name === 'string' ? rawData.name : `Skill ${index + 1}`,\n        cost,\n        upgrades,\n        primaryIconId: typeof rawData.primaryIconId === 'string' && iconIds.has(rawData.primaryIconId) ? rawData.primaryIconId : null,\n        secondaryIconId: typeof rawData.secondaryIconId === 'string' && iconIds.has(rawData.secondaryIconId) ? rawData.secondaryIconId : null,\n        secondaryColor: normalizeOptionalColor(rawData.secondaryColor),\n      },",
+              'node migration',
+          )
+
+          replace_once(
+              "function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {\n  const interaction = useContext(SkillInteractionContext);\n  const label = interaction?.nodeLabels.get(id);",
+              "function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {\n  const interaction = useContext(SkillInteractionContext);\n  const label = interaction?.nodeLabels.get(id);\n  const visual = interaction?.nodeVisuals.get(id);",
+              'SkillNode visual lookup',
+          )
+
+          replace_once(
+              "      <Handle className=\"skill-handle skill-handle-target\" type=\"target\" position={Position.Left} isConnectable={false} />\n      <div className=\"skill-node-core\" />\n      {label && (",
+              "      <Handle className=\"skill-handle skill-handle-target\" type=\"target\" position={Position.Left} isConnectable={false} />\n      {visual?.secondaryIcon && (\n        <MaskedSvgIcon icon={visual.secondaryIcon} color={visual.secondaryColor} className=\"skill-node-secondary-icon\" />\n      )}\n      {visual?.primaryIcon ? (\n        <MaskedSvgIcon icon={visual.primaryIcon} color=\"#ffffff\" className=\"skill-node-primary-icon\" />\n      ) : (\n        <span className=\"skill-node-primary-fallback\" aria-hidden=\"true\" />\n      )}\n      {label && (",
+              'SkillNode icon slots',
+          )
+
+          replace_once(
+              "          {label.currency && <div className=\"skill-node-label-currency\">{label.currency}</div>}\n          {label.name && <div className=\"skill-node-label-name\">{label.name}</div>}",
+              "          {label.currency && (\n            <div className=\"skill-node-label-currency\" style={{ color: visual?.currencyColor ?? '#ffffff' }}>\n              {visual?.currencyIcon && <MaskedSvgIcon icon={visual.currencyIcon} color={visual.currencyColor} className=\"skill-node-label-currency-icon\" />}\n              <span>{label.currency.text}</span>\n            </div>\n          )}\n          {label.name && <div className=\"skill-node-label-name\" style={{ color: visual?.secondaryColor ?? '#ffffff' }}>{label.name}</div>}",
+              'SkillNode labels',
+          )
+
+          replace_once(
+              "      data: data ?? {\n        name: 'New Skill',\n        cost: { currencyId: currencies[0]?.id ?? '', amount: 0 },\n        upgrades: [],\n      },",
+              "      data: data ?? {\n        name: 'New Skill',\n        cost: { currencyId: currencies[0]?.id ?? '', amount: 0 },\n        upgrades: [],\n        primaryIconId: null,\n        secondaryIconId: null,\n        secondaryColor: null,\n      },",
+              'new node defaults',
+          )
+
+          replace_once(
+              "  const cloneNodeData = useCallback((data: SkillNodeData): SkillNodeData => ({\n    name: data.name,\n    cost: { ...data.cost },\n    upgrades: data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),\n  }), []);",
+              "  const cloneNodeData = useCallback((data: SkillNodeData): SkillNodeData => ({\n    name: data.name,\n    cost: { ...data.cost },\n    upgrades: data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),\n    primaryIconId: data.primaryIconId,\n    secondaryIconId: data.secondaryIconId,\n    secondaryColor: data.secondaryColor,\n  }), []);",
+              'clone node data',
+          )
+
+          replace_once(
+              "        data = {\n          name: incrementUpgradeName(sourceNode.data.name),\n          cost: { ...sourceNode.data.cost },\n          upgrades: sourceNode.data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),\n        };",
+              "        data = {\n          name: incrementUpgradeName(sourceNode.data.name),\n          cost: { ...sourceNode.data.cost },\n          upgrades: sourceNode.data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),\n          primaryIconId: sourceNode.data.primaryIconId,\n          secondaryIconId: sourceNode.data.secondaryIconId,\n          secondaryColor: sourceNode.data.secondaryColor,\n        };",
+              'upgrade child appearance copy',
+          )
+
+          replace_once(
+              "  const iconUsageCount = (iconId: string) => {\n    const groupIds = new Set<string>();\n    let count = currencies.filter((currency) => currency.iconId === iconId).length;",
+              "  const iconUsageCount = (iconId: string) => {\n    const groupIds = new Set<string>();\n    let count = currencies.filter((currency) => currency.iconId === iconId).length;\n    count += nodes.filter((node) => node.data.primaryIconId === iconId).length;\n    count += nodes.filter((node) => node.data.secondaryIconId === iconId).length;",
+              'node icon usage count',
+          )
+
+          replace_once(
+              "    setCurrencies((current) => current.map((currency) => ({\n      ...currency,\n      iconId: currency.iconId === iconId ? null : currency.iconId,\n    })));\n    showNotice('Icon deleted and cleared from its assignments.');",
+              "    setCurrencies((current) => current.map((currency) => ({\n      ...currency,\n      iconId: currency.iconId === iconId ? null : currency.iconId,\n    })));\n    setNodes((current) => current.map((node) => ({\n      ...node,\n      data: {\n        ...node.data,\n        primaryIconId: node.data.primaryIconId === iconId ? null : node.data.primaryIconId,\n        secondaryIconId: node.data.secondaryIconId === iconId ? null : node.data.secondaryIconId,\n      },\n    })));\n    showNotice('Icon deleted and cleared from its assignments.');",
+              'node icon clear on delete',
+          )
+
+          replace_once(
+              "  const exportProject = () => {\n    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };\n    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });",
+              "  const exportProject = () => {\n    const statMap = new Map(stats.map((stat) => [stat.id, stat]));\n    const iconIds = new Set(icons.map((icon) => icon.id));\n    const exportNodes = nodes.map((node) => ({\n      ...node,\n      data: {\n        ...node.data,\n        resolvedAppearance: resolveSkillAppearance(node.data, statMap, iconIds),\n      },\n    }));\n    const project = { version: 2, nodes: exportNodes, edges, stats, currencies, icons };\n    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });",
+              'resolved export appearance',
+          )
+
+          old_block = """  const incomingEdges = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId) : [];
+  const selectedCurrency = currencies.find((currency) => currency.id === selectedNode?.data.cost.currencyId);
+
+  const nodeLabels = useMemo(() => {
+    const statMap = new Map(stats.map((stat) => [stat.id, stat]));
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
+    return buildNodeLabelLayout(
+      nodes.map((node) => {
+        const currency = currencyMap.get(node.data.cost.currencyId);
+        return {
+          id: node.id,
+          position: node.position,
+          name: node.data.name,
+          currency: currency ? { symbol: currency.symbol ?? '', amount: node.data.cost.amount } : null,
+          effects: node.data.upgrades.flatMap((upgrade) => {
+            const stat = statMap.get(upgrade.statId);
+            if (!stat) return [];
+            return [{
+              operator: upgrade.operator,
+              value: upgrade.value,
+              groupName: stat.groupName,
+              statName: stat.name,
+            }];
+          }),
+        };
+      }),
+      edges,
+      { showCurrency: showNodeCurrency, showNames: showNodeNames, showStats: showNodeStats },
+    );
+  }, [currencies, edges, nodes, showNodeCurrency, showNodeNames, showNodeStats, stats]);
+"""
+          new_block = """  const incomingEdges = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId) : [];
+  const selectedCurrency = currencies.find((currency) => currency.id === selectedNode?.data.cost.currencyId);
+  const iconMap = useMemo(() => new Map(icons.map((icon) => [icon.id, icon])), [icons]);
+  const statMap = useMemo(() => new Map(stats.map((stat) => [stat.id, stat])), [stats]);
+  const iconIds = useMemo(() => new Set(icons.map((icon) => icon.id)), [icons]);
+  const selectedCurrencyIcon = selectedCurrency?.iconId ? iconMap.get(selectedCurrency.iconId) ?? null : null;
+  const selectedCurrencyColor = selectedCurrency ? normalizeColor(selectedCurrency.color, '#ffffff') : '#ffffff';
+
+  const nodeVisuals = useMemo<ReadonlyMap<string, SkillNodeVisual>>(() => {
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
+    return new Map(nodes.map((node) => {
+      const appearance = resolveSkillAppearance(node.data, statMap, iconIds);
+      const currency = currencyMap.get(node.data.cost.currencyId);
+      const currencyIcon = currency?.iconId ? iconMap.get(currency.iconId) ?? null : null;
+      return [node.id, {
+        ...appearance,
+        primaryIcon: appearance.primaryIconId ? iconMap.get(appearance.primaryIconId) ?? null : null,
+        secondaryIcon: appearance.secondaryIconId ? iconMap.get(appearance.secondaryIconId) ?? null : null,
+        currencyIcon,
+        currencyColor: currency ? normalizeColor(currency.color, '#ffffff') : '#ffffff',
+      }];
+    }));
+  }, [currencies, iconIds, iconMap, nodes, statMap]);
+
+  const selectedVisual = selectedNodeId ? nodeVisuals.get(selectedNodeId) ?? null : null;
+  const selectedFirstStat = selectedNode?.data.upgrades[0] ? statMap.get(selectedNode.data.upgrades[0].statId) : undefined;
+
+  const nodeLabels = useMemo(() => {
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
+    return buildNodeLabelLayout(
+      nodes.map((node) => {
+        const currency = currencyMap.get(node.data.cost.currencyId);
+        return {
+          id: node.id,
+          position: node.position,
+          name: node.data.name,
+          currency: currency ? { amount: node.data.cost.amount, hasIcon: Boolean(currency.iconId && iconIds.has(currency.iconId)) } : null,
+          effects: node.data.upgrades.flatMap((upgrade) => {
+            const stat = statMap.get(upgrade.statId);
+            if (!stat) return [];
+            return [{
+              operator: upgrade.operator,
+              value: upgrade.value,
+              groupName: stat.groupName,
+              statName: stat.name,
+            }];
+          }),
+        };
+      }),
+      edges,
+      { showCurrency: showNodeCurrency, showNames: showNodeNames, showStats: showNodeStats },
+    );
+  }, [currencies, edges, iconIds, nodes, showNodeCurrency, showNodeNames, showNodeStats, statMap]);
+"""
+          replace_once(old_block, new_block, 'node visuals and labels block')
+
+          replace_once(
+              "            <SkillInteractionContext.Provider value={{ beginGesture, duplicateNode, beginRightPan, nodeLabels }}>",
+              "            <SkillInteractionContext.Provider value={{ beginGesture, duplicateNode, beginRightPan, nodeLabels, nodeVisuals }}>",
+              'context provider visuals',
+          )
+
+          old_skill_fields = """                  <div className=\"field-grid cost-grid\">
+                    <label className=\"field-label\">Currency
+                      <select
+                        value={selectedNode.data.cost.currencyId}
+                        onChange={(e) => updateSelectedNode({ cost: { ...selectedNode.data.cost, currencyId: e.target.value } })}
+                        disabled={currencies.length === 0}
+                      >
+                        {currencies.length === 0 && <option value=\"\">No currencies</option>}
+                        {currencies.map((currency) => <option key={currency.id} value={currency.id}>{currency.symbol} {currency.name}</option>)}
+                      </select>
+                    </label>
+                    <label className=\"field-label\">Cost
+                      <div className=\"number-wrap\"><span>{selectedCurrency?.symbol ?? '◇'}</span><input type=\"number\" min=\"0\" value={selectedNode.data.cost.amount} onChange={(e) => updateSelectedNode({ cost: { ...selectedNode.data.cost, amount: Number(e.target.value) } })} /></div>
+                    </label>
+                  </div>"""
+          new_skill_fields = """                  <div className=\"field-grid cost-grid\">
+                    <label className=\"field-label\">Currency
+                      <div className={`currency-select-wrap${selectedCurrencyIcon ? ' has-icon' : ''}`}>
+                        {selectedCurrencyIcon && <MaskedSvgIcon icon={selectedCurrencyIcon} color={selectedCurrencyColor} className=\"inspector-currency-icon\" />}
+                        <select
+                          value={selectedNode.data.cost.currencyId}
+                          onChange={(e) => updateSelectedNode({ cost: { ...selectedNode.data.cost, currencyId: e.target.value } })}
+                          disabled={currencies.length === 0}
+                        >
+                          {currencies.length === 0 && <option value=\"\">No currencies</option>}
+                          {currencies.map((currency) => <option key={currency.id} value={currency.id}>{currency.name}</option>)}
+                        </select>
+                      </div>
+                    </label>
+                    <label className=\"field-label\">Cost
+                      <div className={`number-wrap currency-number-wrap${selectedCurrencyIcon ? ' has-icon' : ''}`}>
+                        {selectedCurrencyIcon && <MaskedSvgIcon icon={selectedCurrencyIcon} color={selectedCurrencyColor} className=\"inspector-currency-icon\" />}
+                        <input type=\"number\" min=\"0\" value={selectedNode.data.cost.amount} onChange={(e) => updateSelectedNode({ cost: { ...selectedNode.data.cost, amount: Number(e.target.value) } })} />
+                      </div>
+                    </label>
+                  </div>"""
+          replace_once(old_skill_fields, new_skill_fields, 'inspector currency controls')
+
+          marker = """                </section>
+
+                <section className=\"inspector-section\">
+                  <div className=\"section-title-row\">
+                    <div><h3>Upgrade stats</h3><p>Typed effects applied when purchased.</p></div>"""
+          appearance = """                </section>
+
+                <section className=\"inspector-section node-appearance-section\">
+                  <div className=\"section-title-row\">
+                    <div><h3>Node appearance</h3><p>Empty icon slots inherit from the first upgrade stat.</p></div>
+                  </div>
+                  <div className=\"node-appearance-icons\">
+                    <label className=\"field-label compact\">Primary icon
+                      <IconPicker
+                        icons={icons}
+                        value={selectedNode.data.primaryIconId}
+                        ariaLabel={`${selectedNode.data.name} primary icon override`}
+                        onChange={(primaryIconId) => updateSelectedNode({ primaryIconId })}
+                        onUpload={async (file) => {
+                          const primaryIconId = await addIconAsset(file);
+                          if (primaryIconId) updateSelectedNode({ primaryIconId });
+                        }}
+                      />
+                    </label>
+                    <label className=\"field-label compact\">Secondary icon
+                      <IconPicker
+                        icons={icons}
+                        value={selectedNode.data.secondaryIconId}
+                        ariaLabel={`${selectedNode.data.name} secondary icon override`}
+                        onChange={(secondaryIconId) => updateSelectedNode({ secondaryIconId })}
+                        onUpload={async (file) => {
+                          const secondaryIconId = await addIconAsset(file);
+                          if (secondaryIconId) updateSelectedNode({ secondaryIconId });
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <label className=\"field-label\">Secondary color
+                    <div className=\"node-color-control\">
+                      <input
+                        type=\"color\"
+                        value={selectedVisual?.secondaryColor ?? '#ffffff'}
+                        aria-label=\"Secondary icon and node name color\"
+                        onChange={(event) => updateSelectedNode({ secondaryColor: event.target.value })}
+                      />
+                      <button
+                        type=\"button\"
+                        className=\"small-button\"
+                        disabled={selectedNode.data.secondaryColor === null}
+                        onClick={() => updateSelectedNode({ secondaryColor: null })}
+                      >
+                        Auto
+                      </button>
+                      <span>{selectedNode.data.secondaryColor === null ? 'Inherited' : 'Custom'}</span>
+                    </div>
+                  </label>
+                  <div className=\"appearance-inheritance-note\">
+                    {selectedFirstStat
+                      ? `Auto uses ${selectedFirstStat.name}: stat icon, ${selectedFirstStat.groupName} group icon, and group color.`
+                      : 'No upgrade stat: primary uses the empty placeholder, secondary stays hidden, and the name is white.'}
+                  </div>
+                </section>
+
+                <section className=\"inspector-section\">
+                  <div className=\"section-title-row\">
+                    <div><h3>Upgrade stats</h3><p>Typed effects applied when purchased.</p></div>"""
+          replace_once(marker, appearance, 'appearance inspector section')
+
+          app.write_text(text)
+
+          layout = Path('src/nodeLabelLayout.ts')
+          lt = layout.read_text()
+          lt = lt.replace("currency: { symbol: string; amount: number } | null;", "currency: { amount: number; hasIcon: boolean } | null;")
+          lt = lt.replace("currency: string | null;", "currency: { text: string; hasIcon: boolean } | null;")
+          lt = lt.replace(
+              "function formatCurrency(currency: NonNullable<NodeLabelInput['currency']>) {\n  const symbol = currency.symbol.trim();\n  const amount = formatNumber(currency.amount);\n  return `${symbol} ${amount}`.trim();\n}",
+              "function formatCurrency(currency: NonNullable<NodeLabelInput['currency']>) {\n  return { text: formatNumber(currency.amount), hasIcon: currency.hasIcon };\n}",
+          )
+          lt = lt.replace(
+              "function estimateLabelSize(currency: string | null, name: string | null, effects: NodeLabelEffectView[]) {\n  const widths = [\n    ...(currency ? [estimatedTextWidth(currency, false)] : []),",
+              "function estimateLabelSize(currency: NodeLabelView['currency'], name: string | null, effects: NodeLabelEffectView[]) {\n  const widths = [\n    ...(currency ? [estimatedTextWidth(currency.text, false) + (currency.hasIcon ? 15 : 0)] : []),",
+          )
+          if "estimatedTextWidth(currency, false)" in lt or "currency.symbol" in lt:
+              raise SystemExit('node label currency conversion incomplete')
+          layout.write_text(lt)
+
+          styles = Path('src/styles.css')
+          st = styles.read_text()
+          old = ".skill-node-core { position: relative; z-index: 2; width: 8px; height: 8px; border-radius: 50%; background: #7d8795; box-shadow: 0 0 0 5px rgba(125,135,149,.07); }\n.skill-node:hover::before { border-color: #7a8491; transform: scale(1.025); }\n.skill-node.is-selected::before { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(182,255,86,.08), 0 0 32px rgba(182,255,86,.12), inset 0 1px 1px rgba(255,255,255,.09); }\n.skill-node.is-selected .skill-node-core { background: var(--accent); box-shadow: 0 0 0 5px rgba(182,255,86,.08), 0 0 15px rgba(182,255,86,.5); }"
+          new = ".skill-node-secondary-icon { position: absolute; z-index: 1; left: 10px; top: 12px; width: 21px; height: 21px; opacity: .62; }\n.skill-node-primary-icon { position: relative; z-index: 3; width: 30px; height: 30px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.42)); }\n.skill-node-primary-fallback { position: relative; z-index: 3; width: 21px; height: 21px; border: 1px dashed rgba(223,228,233,.55); border-radius: 5px; }\n.skill-node:hover::before { border-color: #7a8491; transform: scale(1.025); }\n.skill-node.is-selected::before { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(182,255,86,.08), 0 0 32px rgba(182,255,86,.12), inset 0 1px 1px rgba(255,255,255,.09); }\n.skill-node.is-selected .skill-node-primary-icon { filter: drop-shadow(0 0 5px rgba(255,255,255,.18)); }"
+          if old not in st:
+              raise SystemExit('missing skill node core CSS')
+          st = st.replace(old, new, 1)
+          insert_after = ".number-wrap input { padding-left: 28px; }"
+          addition = """
+.number-wrap input { padding-left: 28px; }
+.currency-select-wrap, .currency-number-wrap { position: relative; }
+.inspector-currency-icon { position: absolute; z-index: 2; left: 10px; top: 10px; width: 16px; height: 16px; pointer-events: none; }
+.currency-select-wrap.has-icon select, .currency-number-wrap.has-icon input { padding-left: 34px; }
+.node-appearance-icons { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+.node-appearance-icons .field-label { justify-items: start; }
+.node-color-control { display: grid; grid-template-columns: 48px auto 1fr; gap: 8px; align-items: center; }
+.node-color-control input[type=\"color\"] { height: 36px; padding: 3px; cursor: pointer; }
+.node-color-control > span { color: #667180; font-size: 9px; font-weight: 650; }
+.appearance-inheritance-note { margin-top: 11px; padding: 9px 10px; border: 1px dashed rgba(255,255,255,.075); border-radius: 8px; color: #657080; font-size: 9px; line-height: 1.45; }
+"""
+          if insert_after not in st:
+              raise SystemExit('missing number-wrap CSS')
+          st = st.replace(insert_after, addition.strip(), 1)
+          styles.write_text(st)
+
+          labels = Path('src/nodeLabels.css')
+          nt = labels.read_text()
+          nt = nt.replace(
+              ".skill-node-label-currency {\n  overflow: visible;\n  color: #cbd3dc;\n  font-size: 10px;\n  font-weight: 720;\n  white-space: nowrap;\n}",
+              ".skill-node-label-currency {\n  overflow: visible;\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  font-size: 10px;\n  font-weight: 720;\n  white-space: nowrap;\n}\n.skill-node-label-currency-icon { width: 11px; height: 11px; flex: 0 0 11px; }",
+          )
+          labels.write_text(nt)
+
+          pdata = Path('src/projectData.ts')
+          pt = pdata.read_text()
+          pt, pcount = re.subn(
+              r"(name: '[^']+',\n          cost: \{ currencyId: '[^']+', amount: [^}]+ \},\n          upgrades: \[[^\n]+\],)(\n        },)",
+              r"\1\n          primaryIconId: null,\n          secondaryIconId: null,\n          secondaryColor: null,\2",
+              pt,
+          )
+          if pcount != 4:
+              raise SystemExit(f'expected 4 projectData starter node patches, got {pcount}')
+          pdata.write_text(pt)
+          PY
+      - name: Build
+        run: |
+          npm install
+          npm run build
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- src/App.tsx src/nodeLabelLayout.ts src/styles.css src/nodeLabels.css src/projectData.ts
+          git commit -m "Use icon pool metadata in skill tree nodes"
+          git push origin HEAD:feat/skill-node-icon-ui
