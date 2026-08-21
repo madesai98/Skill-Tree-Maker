@@ -10,6 +10,7 @@ import './mobile.css';
 import './shortcutLegend.css';
 import './nodeLabels.css';
 import './iconPool.css';
+import './playtest.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(

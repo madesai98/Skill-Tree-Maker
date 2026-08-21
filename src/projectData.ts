@@ -151,9 +151,9 @@ export function createStarterProject(): CanonicalProject {
       { id: 'edge-crit-overdrive', source: 'skill-crit', target: 'skill-overdrive', type: 'skillLink' },
     ],
     stats: [
-      { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number' },
-      { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number' },
-      { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean' },
+      { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', baseValue: 0 },
+      { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', baseValue: 0 },
+      { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', baseValue: false },
     ],
     currencies: [
       { id: 'currency-knowledge', key: 'currency.knowledge', name: 'Knowledge', symbol: '◇', iconId: null, color: '#b6ff56' },

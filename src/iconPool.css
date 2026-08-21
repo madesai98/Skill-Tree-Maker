@@ -150,7 +150,7 @@
 .currency-color-field input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 5px; }
 
 .stat-table-header.with-icons, .stat-row.with-icons {
-  grid-template-columns: minmax(150px, 1.15fr) minmax(145px, 1fr) 64px 90px 100px 40px;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(135px, 1fr) 58px 82px 100px 92px 40px;
 }
 .stat-row-icon { min-width: 0; }
 .stat-row-icon .mobile-label { display: none; }
