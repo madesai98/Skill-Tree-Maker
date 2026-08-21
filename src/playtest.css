@@ -79,6 +79,69 @@
   color: #dce2e8;
   font-size: 14px;
 }
+.playtest-currency-summary {
+  padding: 13px 17px 15px;
+  border-bottom: 1px solid var(--line);
+}
+.playtest-currency-summary-head {
+  margin-bottom: 9px;
+  color: #626c79;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.playtest-currency-list {
+  display: grid;
+  gap: 5px;
+}
+.playtest-currency-row {
+  min-height: 34px;
+  padding: 6px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255,255,255,.055);
+  border-radius: 8px;
+  background: rgba(255,255,255,.015);
+}
+.playtest-currency-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aeb7c2;
+  font-size: 10px;
+  font-weight: 680;
+}
+.playtest-currency-identity > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playtest-currency-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+}
+.playtest-currency-symbol {
+  width: 17px;
+  flex: 0 0 17px;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+}
+.playtest-currency-row > strong {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 760;
+}
+.playtest-currency-empty {
+  color: #697382;
+  font-size: 10px;
+}
 .playtest-stat-group {
   border-bottom: 1px solid var(--line);
 }
