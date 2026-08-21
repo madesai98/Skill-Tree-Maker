@@ -111,10 +111,12 @@ button, select { cursor: pointer; }
   box-shadow: 0 7px 18px rgba(0,0,0,.35), inset 0 1px 1px rgba(255,255,255,.08); transition: .16s ease;
 }
 .skill-node::after { content: ''; position: absolute; inset: 10px; border-radius: 50%; border: 1px solid rgba(255,255,255,.055); }
-.skill-node-core { position: relative; z-index: 2; width: 8px; height: 8px; border-radius: 50%; background: #7d8795; box-shadow: 0 0 0 5px rgba(125,135,149,.07); }
+.skill-node-secondary-icon { position: absolute; z-index: 1; left: 10px; top: 12px; width: 21px; height: 21px; opacity: .62; }
+.skill-node-primary-icon { position: relative; z-index: 3; width: 30px; height: 30px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.42)); }
+.skill-node-primary-fallback { position: relative; z-index: 3; width: 21px; height: 21px; border: 1px dashed rgba(223,228,233,.55); border-radius: 5px; }
 .skill-node:hover::before { border-color: #7a8491; transform: scale(1.025); }
 .skill-node.is-selected::before { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(182,255,86,.08), 0 0 32px rgba(182,255,86,.12), inset 0 1px 1px rgba(255,255,255,.09); }
-.skill-node.is-selected .skill-node-core { background: var(--accent); box-shadow: 0 0 0 5px rgba(182,255,86,.08), 0 0 15px rgba(182,255,86,.5); }
+.skill-node.is-selected .skill-node-primary-icon { filter: drop-shadow(0 0 5px rgba(255,255,255,.18)); }
 .skill-handle { width: 9px !important; height: 24px !important; border: 0 !important; background: transparent !important; opacity: 0; }
 .skill-handle-target { left: 1px !important; }
 .skill-handle-source { right: 1px !important; }
@@ -143,6 +145,15 @@ input:focus, select:focus { border-color: rgba(182,255,86,.45); background: #131
 .number-wrap { position: relative; }
 .number-wrap > span { position: absolute; left: 10px; top: 9px; z-index: 1; color: var(--accent); font-size: 12px; }
 .number-wrap input { padding-left: 28px; }
+.currency-select-wrap, .currency-number-wrap { position: relative; }
+.inspector-currency-icon { position: absolute; z-index: 2; left: 10px; top: 10px; width: 16px; height: 16px; pointer-events: none; }
+.currency-select-wrap.has-icon select, .currency-number-wrap.has-icon input { padding-left: 34px; }
+.node-appearance-icons { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+.node-appearance-icons .field-label { justify-items: start; }
+.node-color-control { display: grid; grid-template-columns: 48px auto 1fr; gap: 8px; align-items: center; }
+.node-color-control input[type="color"] { height: 36px; padding: 3px; cursor: pointer; }
+.node-color-control > span { color: #667180; font-size: 9px; font-weight: 650; }
+.appearance-inheritance-note { margin-top: 11px; padding: 9px 10px; border: 1px dashed rgba(255,255,255,.075); border-radius: 8px; color: #657080; font-size: 9px; line-height: 1.45; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .small-button { height: 29px; padding: 0 9px; color: #a8b0bb; font-size: 10px; }
 .small-button:disabled { opacity: .4; cursor: not-allowed; }

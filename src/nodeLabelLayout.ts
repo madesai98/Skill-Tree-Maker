@@ -9,7 +9,7 @@ export type NodeLabelInput = {
   id: string;
   position: { x: number; y: number };
   name: string;
-  currency: { symbol: string; amount: number } | null;
+  currency: { amount: number; hasIcon: boolean } | null;
   effects: NodeLabelEffectInput[];
 };
 
@@ -25,7 +25,7 @@ export type NodeLabelView = {
   top: number;
   width: number;
   align: 'left' | 'center' | 'right';
-  currency: string | null;
+  currency: { text: string; hasIcon: boolean } | null;
   name: string | null;
   effects: NodeLabelEffectView[];
 };
@@ -67,9 +67,7 @@ function formatNumber(value: number) {
 }
 
 function formatCurrency(currency: NonNullable<NodeLabelInput['currency']>) {
-  const symbol = currency.symbol.trim();
-  const amount = formatNumber(currency.amount);
-  return `${symbol} ${amount}`.trim();
+  return { text: formatNumber(currency.amount), hasIcon: currency.hasIcon };
 }
 
 function statTarget(groupName: string, statName: string) {
@@ -124,9 +122,9 @@ function estimatedTextWidth(text: string, nameLine: boolean) {
   return width * (nameLine ? 1.06 : 1) + 2;
 }
 
-function estimateLabelSize(currency: string | null, name: string | null, effects: NodeLabelEffectView[]) {
+function estimateLabelSize(currency: NodeLabelView['currency'], name: string | null, effects: NodeLabelEffectView[]) {
   const widths = [
-    ...(currency ? [estimatedTextWidth(currency, false)] : []),
+    ...(currency ? [estimatedTextWidth(currency.text, false) + (currency.hasIcon ? 15 : 0)] : []),
     ...(name ? [estimatedTextWidth(name, true)] : []),
     ...effects.map((effect) => estimatedTextWidth(effect.text, false)),
   ];
