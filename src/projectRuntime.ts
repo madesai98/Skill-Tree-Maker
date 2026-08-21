@@ -1,5 +1,4 @@
 import {
-  CloudConflictError,
   FirestoreProjectStore,
   newerCloudDocument,
   type CloudCommitResult,
@@ -37,7 +36,6 @@ const USER_ID_KEY = 'skill-tree:user-id';
 const SETTINGS_KEY = 'skill-tree:project-settings:v1';
 
 type StorageMode = 'local' | 'online';
-type CloudConflictChoice = 'overwrite' | 'cancel';
 
 type RuntimeSettings = {
   mode: StorageMode;
@@ -271,7 +269,7 @@ async function switchOnlineProject(id: string) {
   connectionStatus = 'Online';
   settings = { ...settings, mode: 'online', selectedOnlineProjectId: id };
   writeSettings();
-  await applyWorkingProject(cloud.project, `online:${id}:${userId}`, onlineHistoryController(id));
+  await applyWorkingProject(cloud.project, `online:${id}:shared`, onlineHistoryController(id));
 
   cloudUnsubscribe = cloudStore.subscribe(id, (nextCloud) => {
     if (mode !== 'online' || activeProjectId !== id) return;
@@ -353,122 +351,12 @@ async function reconcileAfterCloudFailure(projectId: string) {
   if (cloudBaseDocument) await applyRemoteSnapshot(cloudBaseDocument.project);
 }
 
-function isCloudConflict(error: unknown) {
-  return error instanceof CloudConflictError || (error instanceof Error && error.name === 'CloudConflictError');
-}
-
-function showCloudConflictDialog(message: string): Promise<CloudConflictChoice> {
-  return new Promise((resolve) => {
-    document.querySelector('.cloud-conflict-backdrop')?.remove();
-    const backdrop = document.createElement('div');
-    backdrop.className = 'cloud-conflict-backdrop';
-    const dialog = document.createElement('div');
-    dialog.className = 'cloud-conflict-dialog';
-    dialog.setAttribute('role', 'alertdialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'cloud-conflict-title');
-    dialog.innerHTML = `
-      <div class="cloud-conflict-copy">
-        <strong id="cloud-conflict-title">Cloud edit conflict</strong>
-        <p class="cloud-conflict-message"></p>
-        <small>Overwrite applies your pending edit on top of the latest shared project and removes history entries that are no longer valid. Cancel discards your pending edit and keeps the collaborator's version.</small>
-      </div>
-      <div class="cloud-conflict-actions">
-        <button type="button" data-conflict-action="cancel">Cancel my changes</button>
-        <button type="button" class="danger" data-conflict-action="overwrite">Overwrite changes</button>
-      </div>`;
-    dialog.querySelector<HTMLElement>('.cloud-conflict-message')!.textContent = message;
-    backdrop.appendChild(dialog);
-    document.body.appendChild(backdrop);
-
-    let settled = false;
-    const finish = (choice: CloudConflictChoice) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('keydown', onKeyDown, true);
-      backdrop.remove();
-      resolve(choice);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      finish('cancel');
-    };
-
-    backdrop.addEventListener('click', (event) => {
-      if (event.target === backdrop) finish('cancel');
-    });
-    dialog.querySelector('[data-conflict-action="cancel"]')?.addEventListener('click', () => finish('cancel'));
-    dialog.querySelector('[data-conflict-action="overwrite"]')?.addEventListener('click', () => finish('overwrite'));
-    window.addEventListener('keydown', onKeyDown, true);
-    dialog.querySelector<HTMLButtonElement>('[data-conflict-action="overwrite"]')?.focus();
-  });
-}
-
-async function prepareOverwriteHistory(projectId: string, committed: CloudCommitResult) {
-  if (!committed.overwriteScope) return;
-  await cloudStore.pruneHistoriesForOverwrite(projectId, committed.overwriteScope);
-  await setHistoryScope(`online:${projectId}:${userId}`, committed.after, onlineHistoryController(projectId));
-}
-
-async function finalizeCloudCommit(projectId: string, committed: CloudCommitResult) {
+async function finalizeCloudCommit(committed: CloudCommitResult) {
   cloudBaseDocument = newerCloudDocument(committed.cloud, pendingRemoteCloud ?? committed.cloud);
   pendingRemoteCloud = null;
   activeProject = cloneValue(committed.after);
-  await prepareOverwriteHistory(projectId, committed);
   recordCommittedHistory(committed.before, committed.after, committed.history);
   await flushHistoryWrites();
-}
-
-async function commitWithConflictChoice(
-  projectId: string,
-  base: CloudProjectDocument,
-  submitted: CanonicalProject,
-): Promise<{ cancelled: boolean; committed: CloudCommitResult | null }> {
-  try {
-    const committed = await cloudStore.commitProject(projectId, base, submitted, userId);
-    return { cancelled: false, committed };
-  } catch (error) {
-    if (!isCloudConflict(error)) throw error;
-    connectionStatus = 'Conflict';
-    renderProjectUi();
-    const choice = await showCloudConflictDialog(error instanceof Error ? error.message : 'A collaborator changed this part of the project.');
-    if (choice === 'cancel') {
-      pendingCloudTarget = null;
-      await reconcileAfterCloudFailure(projectId);
-      connectionStatus = 'Online';
-      return { cancelled: true, committed: null };
-    }
-    connectionStatus = 'Overwriting…';
-    renderProjectUi();
-    const committed = await cloudStore.commitProject(projectId, base, submitted, userId, { overwriteConflicts: true });
-    return { cancelled: false, committed };
-  }
-}
-
-async function forceQueuedCloudEdit(
-  projectId: string,
-  originalBase: CloudProjectDocument,
-  submitted: CanonicalProject,
-  latestLocal: CanonicalProject,
-  reason: string,
-) {
-  connectionStatus = 'Conflict';
-  renderProjectUi();
-  const choice = await showCloudConflictDialog(reason);
-  if (choice === 'cancel') {
-    pendingCloudTarget = null;
-    await reconcileAfterCloudFailure(projectId);
-    connectionStatus = 'Online';
-    return false;
-  }
-  connectionStatus = 'Overwriting…';
-  renderProjectUi();
-  const queuedBase: CloudProjectDocument = { ...cloneValue(originalBase), project: cloneValue(submitted) };
-  const committed = await cloudStore.commitProject(projectId, queuedBase, latestLocal, userId, { overwriteConflicts: true });
-  if (committed) await finalizeCloudCommit(projectId, committed);
-  return true;
 }
 
 async function drainCloudEdits() {
@@ -483,21 +371,16 @@ async function drainCloudEdits() {
       const submitted = pendingCloudTarget;
       pendingCloudTarget = null;
       const base = cloneValue(cloudBaseDocument);
-      const attempt = await commitWithConflictChoice(projectId, base, submitted);
-      if (attempt.cancelled) return;
-      const committed = attempt.committed;
-
+      const committed = await cloudStore.commitProject(projectId, base, submitted, userId);
       if (!committed) continue;
-      await finalizeCloudCommit(projectId, committed);
+      await finalizeCloudCommit(committed);
 
       if (pendingCloudTarget) {
         const latestLocal = pendingCloudTarget;
         pendingCloudTarget = null;
         const rebased = rebaseQueuedProject(cloudBaseDocument, base, submitted, latestLocal, committed, userId);
-        if (!rebased.ok) {
-          const overwritten = await forceQueuedCloudEdit(projectId, base, submitted, latestLocal, rebased.reason);
-          if (!overwritten) return;
-        } else if (rebased.changes.length) {
+        if (!rebased.ok) throw new Error(rebased.reason);
+        if (rebased.changes.length) {
           pendingCloudTarget = rebased.project;
           await applyRemoteSnapshot(rebased.project);
         }
@@ -512,7 +395,7 @@ async function drainCloudEdits() {
     connectionStatus = 'Online';
   } catch (error) {
     pendingCloudTarget = null;
-    connectionStatus = 'Conflict';
+    connectionStatus = 'Error';
     await reconcileAfterCloudFailure(projectId);
     window.alert(error instanceof Error ? error.message : 'The cloud edit could not be saved.');
   } finally {
