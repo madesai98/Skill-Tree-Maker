@@ -298,7 +298,7 @@ export class FirestoreProjectStore {
       if (!cloud) return;
       onChange(cloud);
       window.dispatchEvent(new CustomEvent(SHARED_HISTORY_SYNC_EVENT, {
-        detail: { projectId: id, history: cloneValue(cloud.history) },
+        detail: { projectId: id, revision: cloud.revision, history: cloneValue(cloud.history) },
       }));
     }, onError);
   }
@@ -365,7 +365,12 @@ export class FirestoreProjectStore {
         cloud: cloneValue(nextCloud),
         mutationId,
         changes: cloneValue(changes),
-        history: { sharedState: cloneValue(history), mutationId, ownerId: userId },
+        history: {
+          sharedState: cloneValue(history),
+          sharedRevision: nextCloud.revision,
+          mutationId,
+          ownerId: userId,
+        },
       };
     });
 
@@ -449,6 +454,7 @@ export class FirestoreProjectStore {
         project: completed.project,
         cloud: completed.cloud,
         history: completed.history,
+        historyRevision: completed.cloud.revision,
         mutationId,
       };
     } catch (error) {
