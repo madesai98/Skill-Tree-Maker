@@ -7,7 +7,6 @@ import {
   normalizeProject,
   sameValue,
 } from './projectData';
-import { updateFieldGuardsAfterStep } from './historyGuards';
 import type {
   AtomicHistoryChange,
   CanonicalProject,
@@ -23,18 +22,14 @@ export type HistoryApplyDetail = { transitions: HistoryTransition[] };
 
 export type EntityTouchVector = Record<string, number>;
 
-export type CollaborationHistoryMeta = {
-  mutationId: string;
-  ownerId: string;
-  fieldGuards: Record<string, string>;
-  entityTouchGuards: Record<string, EntityTouchVector>;
-};
-
 export type HistoryEntry = {
   id: string;
   timestamp: number;
   label: string;
   changes: AtomicHistoryChange[];
+  authorId?: string;
+  // Legacy collaborative metadata is accepted so old persisted data remains readable,
+  // but the shared linear history no longer uses any of these guards.
   mutationId?: string;
   ownerId?: string;
   fieldGuards?: Record<string, string>;
@@ -45,9 +40,18 @@ export type HistoryEntry = {
 
 export type HistoryState = { entries: HistoryEntry[]; cursor: number };
 
+export type CollaborationHistoryMeta = {
+  sharedState?: HistoryState;
+  mutationId?: string;
+  ownerId?: string;
+  fieldGuards?: Record<string, string>;
+  entityTouchGuards?: Record<string, EntityTouchVector>;
+};
+
 export type OnlineHistoryResult = {
   ok: boolean;
   project?: CanonicalProject;
+  history?: HistoryState;
   mutationId?: string;
   reason?: string;
 };
@@ -61,11 +65,12 @@ export type OnlineHistoryController = {
 const PROJECT_STORAGE_KEY = 'incremental-td-skill-tree:v2';
 const LEGACY_HISTORY_STORAGE_KEY = 'incremental-td-skill-tree:history:v1';
 const HISTORY_PREFIX = 'incremental-td-skill-tree:history:v3:';
-const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 50;
 const COALESCE_WINDOW_MS = 600;
 const DRAG_FLUSH_DELAY_MS = 50;
 export const HISTORY_APPLY_EVENT = 'skill-tree-history-apply';
 export const PROJECT_SAVED_EVENT = 'skill-tree-project-saved';
+export const SHARED_HISTORY_SYNC_EVENT = 'skill-tree-shared-history-sync';
 
 const nativeSetItem = Storage.prototype.setItem;
 const nativeRemoveItem = Storage.prototype.removeItem;
@@ -96,15 +101,25 @@ function validChange(value: unknown): value is AtomicHistoryChange {
     && typeof change.newExists === 'boolean';
 }
 
-function normalizeHistoryState(raw: unknown): HistoryState {
+function validEntry(value: unknown): value is HistoryEntry {
+  if (!value || typeof value !== 'object') return false;
+  const entry = value as Partial<HistoryEntry>;
+  return typeof entry.id === 'string'
+    && typeof entry.timestamp === 'number'
+    && typeof entry.label === 'string'
+    && Array.isArray(entry.changes)
+    && entry.changes.every(validChange);
+}
+
+export function normalizeHistoryState(raw: unknown): HistoryState {
   if (!raw || typeof raw !== 'object') return { entries: [], cursor: -1 };
   const state = raw as Partial<HistoryState>;
   if (!Array.isArray(state.entries) || typeof state.cursor !== 'number') return { entries: [], cursor: -1 };
-  const entries = state.entries
-    .filter((entry): entry is HistoryEntry => Boolean(entry) && Array.isArray(entry.changes) && entry.changes.every(validChange))
-    .slice(-HISTORY_LIMIT);
-  const removed = Math.max(0, state.entries.length - entries.length);
-  return { entries, cursor: Math.max(-1, Math.min(state.cursor - removed, entries.length - 1)) };
+  const validEntries = state.entries.filter(validEntry);
+  const removed = Math.max(0, validEntries.length - HISTORY_LIMIT);
+  const entries = validEntries.slice(-HISTORY_LIMIT).map((entry) => cloneValue(entry));
+  const cursor = Math.max(-1, Math.min(state.cursor - removed, entries.length - 1));
+  return { entries, cursor };
 }
 
 function readLocalHistory() {
@@ -159,8 +174,8 @@ function historyId() {
   return `history-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function canCoalesce(previous: HistoryEntry, changes: AtomicHistoryChange[], now: number) {
-  return previous.status !== 'conflicted'
+function canCoalesce(previous: HistoryEntry, changes: AtomicHistoryChange[], now: number, authorId?: string) {
+  return previous.authorId === authorId
     && now - previous.timestamp <= COALESCE_WINDOW_MS
     && previous.changes.length === changes.length
     && previous.changes.every((change) => change.oldExists && change.newExists)
@@ -177,55 +192,45 @@ function mergeChanges(previous: AtomicHistoryChange[], next: AtomicHistoryChange
   })).filter((change) => change.oldExists !== change.newExists || !sameValue(change.oldValue, change.newValue));
 }
 
-function appendChanges(changes: AtomicHistoryChange[], collaboration?: CollaborationHistoryMeta) {
-  if (!changes.length) return;
-  const now = Date.now();
-  const applied = historyState.entries.slice(0, historyState.cursor + 1);
+export function appendHistoryState(
+  state: HistoryState,
+  changes: AtomicHistoryChange[],
+  authorId?: string,
+  now = Date.now(),
+): HistoryState {
+  if (!changes.length) return normalizeHistoryState(state);
+  const normalized = normalizeHistoryState(state);
+  const applied = normalized.entries.slice(0, normalized.cursor + 1);
   const previous = applied.at(-1);
 
-  const canMerge = previous
-    && historyState.cursor === historyState.entries.length - 1
-    && canCoalesce(previous, changes, now)
-    && (!collaboration || previous.ownerId === collaboration.ownerId);
-
-  if (canMerge) {
+  if (previous && normalized.cursor === normalized.entries.length - 1 && canCoalesce(previous, changes, now, authorId)) {
     const merged = mergeChanges(previous.changes, changes);
-    const mergedEntry: HistoryEntry | null = merged.length ? {
-      ...previous,
-      timestamp: now,
-      label: describeEntry(merged),
-      changes: merged,
-      ...(collaboration ? {
-        mutationId: collaboration.mutationId,
-        ownerId: collaboration.ownerId,
-        fieldGuards: { ...(previous.fieldGuards ?? {}), ...collaboration.fieldGuards },
-        entityTouchGuards: cloneValue(collaboration.entityTouchGuards),
-      } : {}),
-    } : null;
-    const entries: HistoryEntry[] = mergedEntry
-      ? [...applied.slice(0, -1), mergedEntry]
+    const entries = merged.length
+      ? [...applied.slice(0, -1), {
+        ...previous,
+        timestamp: now,
+        label: describeEntry(merged),
+        changes: merged,
+      }]
       : applied.slice(0, -1);
-    historyState = { entries, cursor: entries.length - 1 };
-    void writeHistory(historyState);
-    renderPanel();
-    return;
+    const limited = entries.slice(-HISTORY_LIMIT);
+    return { entries: limited, cursor: limited.length - 1 };
   }
 
   const entry: HistoryEntry = {
     id: historyId(),
     timestamp: now,
     label: describeEntry(changes),
-    changes,
-    ...(collaboration ? {
-      mutationId: collaboration.mutationId,
-      ownerId: collaboration.ownerId,
-      fieldGuards: cloneValue(collaboration.fieldGuards),
-      entityTouchGuards: cloneValue(collaboration.entityTouchGuards),
-    } : {}),
-    status: 'applied',
+    changes: cloneValue(changes),
+    ...(authorId ? { authorId } : {}),
   };
   const entries = [...applied, entry].slice(-HISTORY_LIMIT);
-  historyState = { entries, cursor: entries.length - 1 };
+  return { entries, cursor: entries.length - 1 };
+}
+
+function appendChanges(changes: AtomicHistoryChange[], authorId?: string) {
+  if (!changes.length) return;
+  historyState = appendHistoryState(historyState, changes, authorId);
   void writeHistory(historyState);
   renderPanel();
 }
@@ -268,12 +273,26 @@ export function getHistoryProject() {
   return latestEditorProject ? cloneValue(latestEditorProject) : null;
 }
 
-export function recordCommittedHistory(before: CanonicalProject, after: CanonicalProject, collaboration: CollaborationHistoryMeta) {
+export function recordCommittedHistory(
+  before: CanonicalProject,
+  after: CanonicalProject,
+  collaboration: CollaborationHistoryMeta,
+) {
   lastProject = cloneValue(after);
-  appendChanges(diffProjects(before, after), collaboration);
+  latestEditorProject = cloneValue(after);
+  if (collaboration.sharedState) {
+    historyState = normalizeHistoryState(collaboration.sharedState);
+    renderPanel();
+    return;
+  }
+  appendChanges(diffProjects(before, after), collaboration.ownerId);
 }
 
-export async function setHistoryScope(scope: string, project: CanonicalProject, controller: OnlineHistoryController | null = null) {
+export async function setHistoryScope(
+  scope: string,
+  project: CanonicalProject,
+  controller: OnlineHistoryController | null = null,
+) {
   historyScope = scope;
   onlineController = controller;
   lastProject = cloneValue(project);
@@ -330,50 +349,58 @@ function transitionsForCursor(targetCursor: number): HistoryTransition[] {
 }
 
 function dispatchTransitions(transitions: HistoryTransition[]) {
+  if (!transitions.length) return;
   window.dispatchEvent(new CustomEvent<HistoryApplyDetail>(HISTORY_APPLY_EVENT, { detail: { transitions } }));
 }
 
-async function applyOnlineStep(direction: HistoryDirection, targetCursor: number) {
+async function applyOnlineStep(direction: HistoryDirection) {
   const controller = onlineController;
-  if (!controller || applyingHistory) return;
+  if (!controller || applyingHistory) return false;
   const entryIndex = direction === 'undo' ? historyState.cursor : historyState.cursor + 1;
   const entry = historyState.entries[entryIndex];
-  if (!entry) return;
+  if (!entry) return false;
+  const previousCursor = historyState.cursor;
   applyingHistory = true;
   try {
     const result = await controller.apply(direction, entry);
+    if (result.history) historyState = normalizeHistoryState(result.history);
     if (!result.ok || !result.project) {
-      historyState = {
-        ...historyState,
-        entries: historyState.entries.map((candidate, index): HistoryEntry => index === entryIndex
-          ? { ...candidate, status: 'conflicted', conflictReason: result.reason ?? 'The shared project changed after this action.' }
-          : candidate),
-      };
-      await writeHistory(historyState);
       renderPanel();
-      return;
+      return historyState.cursor !== previousCursor;
     }
 
     const previous = lastProject;
     lastProject = cloneValue(result.project);
-    let entries = historyState.entries.map((candidate, index): HistoryEntry => {
-      if (index !== entryIndex) return candidate;
-      const next: HistoryEntry = {
-        ...candidate,
-        status: direction === 'undo' ? 'undone' : 'applied',
-        ...(result.mutationId ? { mutationId: result.mutationId } : {}),
+    latestEditorProject = cloneValue(result.project);
+    if (!result.history) {
+      historyState = {
+        ...historyState,
+        cursor: Math.max(-1, Math.min(previousCursor + (direction === 'undo' ? -1 : 1), historyState.entries.length - 1)),
       };
-      delete next.conflictReason;
-      return next;
-    });
-    if (result.mutationId) entries = updateFieldGuardsAfterStep(entries, entryIndex, direction, result.mutationId);
-    historyState = { ...historyState, cursor: targetCursor, entries };
-    await writeHistory(historyState);
+    }
     nativeSetItem.call(localStorage, PROJECT_STORAGE_KEY, JSON.stringify(result.project));
-    if (previous) dispatchTransitions([{ direction, changes: diffProjects(previous, result.project) }]);
+
+    // diffProjects(previous, result.project) already describes the exact old -> new project.
+    // It must therefore be dispatched as a redo transition even when the history cursor moved
+    // backward; dispatching it as undo would immediately re-apply the pre-undo state.
+    if (previous) {
+      const changes = diffProjects(previous, result.project);
+      if (changes.length) dispatchTransitions([{ direction: 'redo', changes }]);
+    }
     renderPanel();
+    return historyState.cursor !== previousCursor;
   } finally {
     applyingHistory = false;
+  }
+}
+
+async function restoreOnlineCursor(targetCursor: number) {
+  let target = Math.max(-1, Math.min(targetCursor, historyState.entries.length - 1));
+  for (let attempt = 0; attempt < HISTORY_LIMIT + 1 && historyState.cursor !== target; attempt += 1) {
+    const before = historyState.cursor;
+    const moved = await applyOnlineStep(target < historyState.cursor ? 'undo' : 'redo');
+    target = Math.max(-1, Math.min(target, historyState.entries.length - 1));
+    if (!moved || historyState.cursor === before) break;
   }
 }
 
@@ -382,13 +409,14 @@ function restoreCursor(targetCursor: number) {
   const target = Math.max(-1, Math.min(targetCursor, historyState.entries.length - 1));
   if (target === historyState.cursor) return;
   if (onlineController) {
-    if (Math.abs(target - historyState.cursor) === 1) void applyOnlineStep(target < historyState.cursor ? 'undo' : 'redo', target);
+    void restoreOnlineCursor(target);
     return;
   }
   const transitions = transitionsForCursor(target);
   if (!transitions.length) return;
   applyingHistory = true;
   lastProject = applyTransitionsToProject(lastProject, transitions);
+  latestEditorProject = cloneValue(lastProject);
   historyState = { ...historyState, cursor: target };
   void writeHistory(historyState);
   nativeSetItem.call(localStorage, PROJECT_STORAGE_KEY, JSON.stringify(lastProject));
@@ -414,6 +442,20 @@ window.addEventListener('keydown', (event) => {
   if (event.shiftKey) redo(); else undo();
 }, true);
 
+type SharedHistorySyncDetail = {
+  projectId?: string;
+  history?: HistoryState;
+};
+
+window.addEventListener(SHARED_HISTORY_SYNC_EVENT, (event) => {
+  if (!onlineController) return;
+  const detail = (event as CustomEvent<SharedHistorySyncDetail>).detail;
+  if (!detail?.projectId || !detail.history) return;
+  if (!historyScope.startsWith(`online:${detail.projectId}:`)) return;
+  historyState = normalizeHistoryState(detail.history);
+  renderPanel();
+});
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]!);
 }
@@ -425,14 +467,14 @@ function renderPanel() {
   const recent = historyState.entries.map((entry, index) => ({ entry, index })).reverse();
   panel.innerHTML = `
     <div class="history-panel-head">
-      <div><strong>Change history</strong><span>${historyState.entries.length}/${HISTORY_LIMIT} transactions${onlineController ? ' · this user' : ''}</span></div>
+      <div><strong>Change history</strong><span>${historyState.entries.length}/${HISTORY_LIMIT} transactions${onlineController ? ' · shared' : ''}</span></div>
       <div class="history-step-actions"><button data-history-action="undo" ${historyState.cursor >= 0 ? '' : 'disabled'}>↶</button><button data-history-action="redo" ${historyState.cursor < historyState.entries.length - 1 ? '' : 'disabled'}>↷</button></div>
     </div>
     <div class="history-list">
-      ${recent.map(({ entry, index }) => `<button class="history-entry${index === historyState.cursor ? ' is-current' : ''}${entry.status === 'conflicted' ? ' is-conflicted' : ''}" data-history-index="${index}" ${onlineController && Math.abs(index - historyState.cursor) > 1 ? 'disabled' : ''}><span class="history-dot"></span><span class="history-entry-copy"><strong>${escapeHtml(entry.label)}</strong><small>${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'} · ${escapeHtml(entry.changes[0]?.key.join(' › ') ?? '')}</small><small>${entry.status === 'conflicted' ? escapeHtml(entry.conflictReason ?? 'Conflict') : new Date(entry.timestamp).toLocaleTimeString()}</small></span></button>`).join('')}
-      <button class="history-entry${historyState.cursor === -1 ? ' is-current' : ''}" data-history-index="-1" ${onlineController && historyState.cursor > 0 ? 'disabled' : ''}><span class="history-dot"></span><span class="history-entry-copy"><strong>Start of history</strong><small>Project baseline</small></span></button>
+      ${recent.map(({ entry, index }) => `<button class="history-entry${index === historyState.cursor ? ' is-current' : ''}" data-history-index="${index}"><span class="history-dot"></span><span class="history-entry-copy"><strong>${escapeHtml(entry.label)}</strong><small>${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'} · ${escapeHtml(entry.changes[0]?.key.join(' › ') ?? '')}</small><small>${new Date(entry.timestamp).toLocaleTimeString()}</small></span></button>`).join('')}
+      <button class="history-entry${historyState.cursor === -1 ? ' is-current' : ''}" data-history-index="-1"><span class="history-dot"></span><span class="history-entry-copy"><strong>Start of history</strong><small>Project baseline</small></span></button>
     </div>
-    <div class="history-panel-foot">Atomic changes · Ctrl+Z undo · Ctrl+Shift+Z redo${onlineController ? ' · collaborative guard checks enabled' : ''}</div>`;
+    <div class="history-panel-foot">${onlineController ? 'Shared linear history' : 'Atomic changes'} · Ctrl+Z undo · Ctrl+Shift+Z redo</div>`;
 }
 
 function installHistoryUi() {
