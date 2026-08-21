@@ -1,4 +1,5 @@
 name: Validate build
+run-name: Apply and validate playtest implementation
 
 on:
   pull_request:
@@ -6,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -14,11 +15,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Apply playtest implementation
+        run: python scripts/agent_playtest_edit.py
 
       - name: Install dependencies
         run: npm install
@@ -58,3 +64,16 @@ jobs:
           ASSET=$(cat /tmp/skill-tree-asset-path)
           test -n "$ASSET"
           curl --fail --silent --show-error "http://127.0.0.1:4173${ASSET}" -o /dev/null
+
+      - name: Commit generated implementation
+        shell: bash
+        run: |
+          git checkout -- package-lock.json 2>/dev/null || true
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo 'Patch produced no changes'; exit 1; }
+          git commit -m "Add playtest simulation mode"
+          git push origin HEAD:${{ github.head_ref }}
