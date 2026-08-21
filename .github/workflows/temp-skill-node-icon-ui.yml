@@ -1,12 +1,12 @@
 name: Temporary skill node icon UI patch
 on:
-  push:
-    branches: [feat/skill-node-icon-ui]
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'feat/skill-node-icon-ui' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +50,6 @@ jobs:
               'interaction context',
           )
 
-          # Starter nodes need explicit nullable overrides.
           text, count = re.subn(
               r"(name: '[^']+',\n      cost: \{ currencyId: '[^']+', amount: [^}]+ \},\n      upgrades: \[[^\n]+\],)(\n    },)",
               r"\1\n      primaryIconId: null,\n      secondaryIconId: null,\n      secondaryColor: null,\2",
