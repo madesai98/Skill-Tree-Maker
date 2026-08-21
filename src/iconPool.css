@@ -55,6 +55,7 @@
   top: calc(100% + 7px);
   left: 0;
   width: min(292px, calc(100vw - 32px));
+  min-width: 257px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
@@ -120,6 +121,20 @@
 .stat-group-card:has(.icon-picker.is-open),
 .stat-group-card .stat-table-card:has(.icon-picker.is-open),
 .currency-pool-view .stat-table-card:has(.icon-picker.is-open) { overflow: visible; }
+
+.inspector .cost-grid + .field-grid > .field-label { margin-top: 0; }
+.node-appearance-icons > .field-label .icon-picker { width: 100%; }
+.node-appearance-icons > .field-label .icon-picker-dropdown {
+  width: min(292px, calc(200% + 18px));
+}
+.node-appearance-icons > .field-label:first-child .icon-picker-dropdown {
+  left: 0;
+  right: auto;
+}
+.node-appearance-icons > .field-label:nth-child(2) .icon-picker-dropdown {
+  left: auto;
+  right: 0;
+}
 
 .stat-group-fields.with-appearance {
   grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.1fr) 62px 78px;
@@ -251,5 +266,6 @@
 
 @media (max-width: 420px) {
   .icon-picker-dropdown { width: min(257px, calc(100vw - 24px)); }
+  .node-appearance-icons > .field-label .icon-picker-dropdown { width: min(257px, calc(200% + 18px)); }
   .icon-picker-grid { grid-template-columns: repeat(4, 44px); }
 }
