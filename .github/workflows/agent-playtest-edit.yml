@@ -70,3 +70,5 @@ jobs:
           git diff --cached --quiet && { echo 'Patch produced no changes'; exit 1; }
           git commit -m "Add playtest simulation mode"
           git push origin HEAD:agent/playtest-simulation-20260820
+
+# Trigger after workflow exists on branch.
