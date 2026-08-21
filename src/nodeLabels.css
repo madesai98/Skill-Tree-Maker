@@ -61,11 +61,14 @@
 }
 .skill-node-label-currency {
   overflow: visible;
-  color: #cbd3dc;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   font-weight: 720;
   white-space: nowrap;
 }
+.skill-node-label-currency-icon { width: 11px; height: 11px; flex: 0 0 11px; }
 .skill-node-label-name {
   overflow: visible;
   font-size: 11px;
