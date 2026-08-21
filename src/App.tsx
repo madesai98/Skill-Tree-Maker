@@ -751,12 +751,16 @@ function PlaytestInspector({
   groups,
   values,
   iconMap,
+  currencies,
+  currencyTotals,
   unlockedCount,
   totalNodes,
 }: {
   groups: StatGroupView[];
   values: ReadonlyMap<string, number | boolean>;
   iconMap: ReadonlyMap<string, IconAsset>;
+  currencies: CurrencyDefinition[];
+  currencyTotals: ReadonlyMap<string, number>;
   unlockedCount: number;
   totalNodes: number;
 }) {
@@ -774,6 +778,32 @@ function PlaytestInspector({
           <span>Unlocked skills</span>
           <strong>{unlockedCount} / {totalNodes}</strong>
         </div>
+        <section className="playtest-currency-summary">
+          <div className="playtest-currency-summary-head">Currency used</div>
+          {currencies.length === 0 ? (
+            <div className="playtest-currency-empty">No currencies are configured.</div>
+          ) : (
+            <div className="playtest-currency-list">
+              {currencies.map((currency) => {
+                const currencyIcon = currency.iconId ? iconMap.get(currency.iconId) ?? null : null;
+                const currencyColor = normalizeColor(currency.color, '#ffffff');
+                return (
+                  <div className="playtest-currency-row" key={currency.id}>
+                    <div className="playtest-currency-identity">
+                      {currencyIcon ? (
+                        <MaskedSvgIcon icon={currencyIcon} color={currencyColor} className="playtest-currency-icon" />
+                      ) : (
+                        <span className="playtest-currency-symbol" style={{ color: currencyColor }} aria-hidden="true">{currency.symbol ?? '◇'}</span>
+                      )}
+                      <span>{currency.name}</span>
+                    </div>
+                    <strong style={{ color: currencyColor }}>{formatSimulatedNumber(currencyTotals.get(currency.id) ?? 0)}</strong>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
         {groups.length === 0 ? (
           <div className="playtest-empty-stats">No stats are configured in the stat pool.</div>
         ) : groups.map((group) => {
@@ -1739,6 +1769,17 @@ effects: node.data.upgrades.flatMap((upgrade) => {
     simulateStatValues(stats, nodes, unlockedNodeIds),
   [nodes, stats, unlockedNodeIds]);
 
+  const playtestCurrencyTotals = useMemo(() => {
+    const totals = new Map<string, number>(currencies.map((currency) => [currency.id, 0]));
+    nodes.forEach((node) => {
+      if (!unlockedNodeIds.has(node.id)) return;
+      const { currencyId, amount } = node.data.cost;
+      if (!currencyId || !Number.isFinite(amount)) return;
+      totals.set(currencyId, (totals.get(currencyId) ?? 0) + amount);
+    });
+    return totals;
+  }, [currencies, nodes, unlockedNodeIds]);
+
   const unlockPlaytestNode = useCallback((nodeId: string) => {
     if (unlockedNodeIds.has(nodeId)) return;
     if (!canUnlockPlaytestNode(nodeId, unlockedNodeIds, edges)) {
@@ -1943,6 +1984,8 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               groups={statGroups}
               values={simulatedStats}
               iconMap={iconMap}
+              currencies={currencies}
+              currencyTotals={playtestCurrencyTotals}
               unlockedCount={unlockedNodeIds.size}
               totalNodes={nodes.length}
             />
