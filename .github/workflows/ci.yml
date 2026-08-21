@@ -32,7 +32,7 @@ jobs:
           path = Path('/tmp/skill-node-patch.py')
           text = path.read_text()
           strict = "replace_once(old_block, new_block, 'node visuals and labels block')"
-          loose = """match = re.search(r\"  const incomingEdges = selectedNodeId.*?(?=\\n  const renderedEdges = useMemo)\", text, re.S)\n          if not match:\n              raise SystemExit('missing node visuals and labels region')\n          text = text[:match.start()] + new_block.rstrip() + '\\n\\n' + text[match.end():]"""
+          loose = "match = re.search(r\"  const incomingEdges = selectedNodeId.*?(?=\\n  const renderedEdges = useMemo)\", text, re.S)\nif not match:\n    raise SystemExit('missing node visuals and labels region')\ntext = text[:match.start()] + new_block.rstrip() + '\\n\\n' + text[match.end():]"
           if strict not in text:
               raise SystemExit('missing strict node-label replacement in patch script')
           path.write_text(text.replace(strict, loose, 1))
