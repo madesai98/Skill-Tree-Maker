@@ -42,6 +42,7 @@ export type HistoryState = { entries: HistoryEntry[]; cursor: number };
 
 export type CollaborationHistoryMeta = {
   sharedState?: HistoryState;
+  sharedRevision?: number;
   mutationId?: string;
   ownerId?: string;
   fieldGuards?: Record<string, string>;
@@ -52,6 +53,7 @@ export type OnlineHistoryResult = {
   ok: boolean;
   project?: CanonicalProject;
   history?: HistoryState;
+  historyRevision?: number;
   mutationId?: string;
   reason?: string;
 };
@@ -80,6 +82,7 @@ let historyState: HistoryState = { entries: [], cursor: -1 };
 let lastProject: CanonicalProject | null = null;
 let latestEditorProject: CanonicalProject | null = null;
 let onlineController: OnlineHistoryController | null = null;
+let latestSharedHistoryRevision = -1;
 let historyWriteChain: Promise<void> = Promise.resolve();
 let externalRecording = false;
 let applyingHistory = false;
@@ -281,7 +284,11 @@ export function recordCommittedHistory(
   lastProject = cloneValue(after);
   latestEditorProject = cloneValue(after);
   if (collaboration.sharedState) {
-    historyState = normalizeHistoryState(collaboration.sharedState);
+    const revision = collaboration.sharedRevision;
+    if (revision === undefined || revision >= latestSharedHistoryRevision) {
+      historyState = normalizeHistoryState(collaboration.sharedState);
+      if (revision !== undefined) latestSharedHistoryRevision = revision;
+    }
     renderPanel();
     return;
   }
@@ -295,6 +302,7 @@ export async function setHistoryScope(
 ) {
   historyScope = scope;
   onlineController = controller;
+  latestSharedHistoryRevision = -1;
   lastProject = cloneValue(project);
   latestEditorProject = cloneValue(project);
   pendingDragProject = null;
@@ -363,7 +371,13 @@ async function applyOnlineStep(direction: HistoryDirection) {
   applyingHistory = true;
   try {
     const result = await controller.apply(direction, entry);
-    if (result.history) historyState = normalizeHistoryState(result.history);
+    if (result.history) {
+      const revision = result.historyRevision;
+      if (revision === undefined || revision >= latestSharedHistoryRevision) {
+        historyState = normalizeHistoryState(result.history);
+        if (revision !== undefined) latestSharedHistoryRevision = revision;
+      }
+    }
     if (!result.ok || !result.project) {
       renderPanel();
       return historyState.cursor !== previousCursor;
@@ -444,6 +458,7 @@ window.addEventListener('keydown', (event) => {
 
 type SharedHistorySyncDetail = {
   projectId?: string;
+  revision?: number;
   history?: HistoryState;
 };
 
@@ -452,7 +467,9 @@ window.addEventListener(SHARED_HISTORY_SYNC_EVENT, (event) => {
   const detail = (event as CustomEvent<SharedHistorySyncDetail>).detail;
   if (!detail?.projectId || !detail.history) return;
   if (!historyScope.startsWith(`online:${detail.projectId}:`)) return;
+  if (typeof detail.revision === 'number' && detail.revision < latestSharedHistoryRevision) return;
   historyState = normalizeHistoryState(detail.history);
+  if (typeof detail.revision === 'number') latestSharedHistoryRevision = detail.revision;
   renderPanel();
 });
 
