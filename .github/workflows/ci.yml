@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -14,35 +14,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: feat/skill-node-icon-ui
-          fetch-depth: 0
-
-      - name: Apply skill node appearance patch
-        shell: bash
-        run: |
-          awk '
-            /python - <<'\''PY'\''/ { capture=1; next }
-            capture && /^          PY$/ { exit }
-            capture { sub(/^          /, ""); print }
-          ' .github/workflows/temp-skill-node-icon-ui.yml > /tmp/skill-node-patch.py
-          test -s /tmp/skill-node-patch.py
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('/tmp/skill-node-patch.py')
-          text = path.read_text()
-          replacements = {
-              "replace_once(old_block, new_block, 'node visuals and labels block')": "match = re.search(r\"  const incomingEdges = selectedNodeId.*?(?=\\n  const renderedEdges = useMemo)\", text, re.S)\nif not match:\n    raise SystemExit('missing node visuals and labels region')\ntext = text[:match.start()] + new_block.rstrip() + '\\n\\n' + text[match.end():]",
-              "replace_once(old_skill_fields, new_skill_fields, 'inspector currency controls')": "match = re.search(r\"                  <div className=\\\"field-grid cost-grid\\\">.*?(?=\\n                  <div className=\\\"field-grid\\\">\\n                    <label className=\\\"field-label\\\">X position)\", text, re.S)\nif not match:\n    raise SystemExit('missing inspector currency region')\ntext = text[:match.start()] + new_skill_fields.rstrip() + '\\n' + text[match.end():]",
-              "replace_once(marker, appearance, 'appearance inspector section')": "match = re.search(r\"                </section>\\n\\n                <section className=\\\"inspector-section\\\">\\n                  <div className=\\\"section-title-row\\\">\\n                    <div><h3>Upgrade stats</h3><p>Typed effects applied when purchased.</p></div>\", text)\nif not match:\n    raise SystemExit('missing appearance insertion region')\ntext = text[:match.start()] + appearance.rstrip() + text[match.end():]",
-          }
-          for strict, loose in replacements.items():
-              if strict not in text:
-                  raise SystemExit(f'missing patch hook: {strict}')
-              text = text.replace(strict, loose, 1)
-          path.write_text(text)
-          PY
-          python /tmp/skill-node-patch.py
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -54,19 +25,6 @@ jobs:
 
       - name: Production build
         run: npm run build
-
-      - name: Commit implementation
-        shell: bash
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -- src/App.tsx src/nodeLabelLayout.ts src/styles.css src/nodeLabels.css src/projectData.ts
-          if git diff --cached --quiet; then
-            echo "No implementation changes to commit"
-          else
-            git commit -m "Use icon pool metadata in skill tree nodes"
-            git push origin HEAD:feat/skill-node-icon-ui
-          fi
 
       - name: Smoke test production output
         shell: bash
