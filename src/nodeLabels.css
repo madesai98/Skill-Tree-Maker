@@ -61,14 +61,18 @@
 }
 .skill-node-label-currency {
   overflow: visible;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: block;
   font-size: 10px;
   font-weight: 720;
   white-space: nowrap;
 }
-.skill-node-label-currency-icon { width: 11px; height: 11px; flex: 0 0 11px; }
+.skill-node-label-currency-icon {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
 .skill-node-label-name {
   overflow: visible;
   font-size: 11px;
@@ -86,11 +90,9 @@
   white-space: nowrap;
 }
 .skill-node-label-modifier {
-  display: inline-block;
-  min-width: 1.8em;
+  display: inline;
   margin-right: 3px;
   font-weight: 790;
-  text-align: right;
 }
 .skill-node-label-modifier.positive { color: var(--accent); }
 .skill-node-label-modifier.negative { color: #ef8b91; }
