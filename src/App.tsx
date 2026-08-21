@@ -34,20 +34,23 @@ import {
 import type { HistoryApplyDetail } from './history';
 import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
 import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, svgDataUrl, type IconAsset } from './iconPool';
+import { canLockPlaytestNode, canUnlockPlaytestNode, simulateStatValues } from './playtest';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
 type BooleanOperator = 'set';
 type UpgradeOperator = NumberOperator | BooleanOperator;
-type EditorView = 'tree' | 'stats' | 'currencies' | 'icons';
+type EditorView = 'tree' | 'playtest' | 'stats' | 'currencies' | 'icons';
 
 type Point = { x: number; y: number };
+type PlaytestNodeState = 'locked' | 'available' | 'unlocked';
 
 type StatDefinition = {
   id: string;
   key: string;
   name: string;
   type: StatType;
+  baseValue: number | boolean;
   iconId: string | null;
   groupId: string;
   groupName: string;
@@ -131,15 +134,27 @@ type ClipboardSnapshot = {
   rootParentEdges: Array<{ source: string; target: string }>;
 };
 
+type StatGroupView = {
+  id: string;
+  name: string;
+  key: string;
+  iconId: string | null;
+  color: string;
+  stats: StatDefinition[];
+};
+
 type SkillInteractionContextValue = {
   beginGesture: (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   duplicateNode: (nodeId: string) => void;
-  beginRightPan: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  beginRightPan: (event: ReactPointerEvent<HTMLDivElement>, clickAction?: () => void) => void;
   nodeLabels: ReadonlyMap<string, NodeLabelView>;
   nodeVisuals: ReadonlyMap<string, SkillNodeVisual>;
+  playtestNodeStates: ReadonlyMap<string, PlaytestNodeState>;
+  lockPlaytestNode: (nodeId: string) => void;
 };
 
 const SkillInteractionContext = createContext<SkillInteractionContextValue | null>(null);
+const EMPTY_PLAYTEST_NODE_STATES = new Map<string, PlaytestNodeState>();
 
 const STORAGE_KEY = 'incremental-td-skill-tree:v2';
 const LEGACY_STORAGE_KEY = 'incremental-td-skill-tree:v1';
@@ -147,9 +162,9 @@ const NODE_SIZE = 62;
 const NODE_RADIUS = 29;
 
 const starterStats: StatDefinition[] = [
-  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
-  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
-  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', baseValue: false, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
 ];
 
 const starterCurrencies: CurrencyDefinition[] = [
@@ -405,6 +420,9 @@ function normalizeStats(raw: unknown): StatDefinition[] {
       key: composeStatKey(groupKey, localKey),
       name: typeof value.name === 'string' ? value.name : `Stat ${index + 1}`,
       type,
+      baseValue: type === 'boolean'
+        ? Boolean(value.baseValue)
+        : (typeof value.baseValue === 'number' && Number.isFinite(value.baseValue) ? value.baseValue : 0),
       iconId: typeof value.iconId === 'string' ? value.iconId : null,
       groupId,
       groupName,
@@ -467,6 +485,7 @@ function migrateProject(raw: unknown): PersistedProject | null {
   const fallbackCurrencyId = currencies[0]?.id ?? '';
   const currencyIds = new Set(currencies.map((currency) => currency.id));
   const statMap = new Map(stats.map((stat) => [stat.id, stat]));
+  const usedBooleanStatIds = new Set<string>();
 
   const nodes: SkillFlowNode[] = value.nodes.flatMap((item, index) => {
     if (!item || typeof item !== 'object') return [];
@@ -500,6 +519,8 @@ function migrateProject(raw: unknown): PersistedProject | null {
           const stat = statMap.get(statId);
           if (!stat) return [];
           if (stat.type === 'boolean') {
+            if (usedBooleanStatIds.has(statId)) return [];
+            usedBooleanStatIds.add(statId);
             return [{
               id: typeof upgrade.id === 'string' ? upgrade.id : `upgrade-import-${index}-${upgradeIndex}`,
               statId,
@@ -607,6 +628,7 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
   const interaction = useContext(SkillInteractionContext);
   const label = interaction?.nodeLabels.get(id);
   const visual = interaction?.nodeVisuals.get(id);
+  const playtestState = interaction?.playtestNodeStates.get(id);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -615,6 +637,15 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
       event.clientY - (rect.top + rect.height / 2),
     );
     if (distanceFromCenter > Math.min(rect.width, rect.height) / 2) return;
+
+    if (playtestState) {
+      if (event.button === 2) {
+        event.preventDefault();
+        event.stopPropagation();
+        interaction?.beginRightPan(event, () => interaction.lockPlaytestNode(id));
+      }
+      return;
+    }
 
     if (event.button === 1) {
       event.preventDefault();
@@ -640,8 +671,8 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 
   return (
     <div
-      className={`skill-node${selected ? ' is-selected' : ''}`}
-      aria-label="Skill node"
+      className={`skill-node${selected ? ' is-selected' : ''}${playtestState ? ` is-playtest is-playtest-${playtestState}` : ''}`}
+      aria-label={playtestState ? `Skill node, ${playtestState}` : 'Skill node'}
       data-skill-node-id={id}
       onPointerDown={onPointerDown}
       onContextMenu={(event) => event.preventDefault()}
@@ -688,13 +719,14 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 const nodeTypes = { skill: SkillNode };
 const edgeTypes = { skillLink: SkillLinkEdgeComponent };
 
-function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
+function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'playtest' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
   const paths: Record<string, ReactElement> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />,
     download: <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14" />,
     upload: <path d="M12 17V5m0 0 4 4m-4-4-4 4M5 20h14" />,
     tree: <path d="M12 4v5m0 0-5 4m5-4 5 4M7 13v5m10-5v5M4 18h6m4 0h6" />,
+    playtest: <path d="M8 5v14l11-7-11-7Z" />,
     stats: <path d="M5 19V9m7 10V5m7 14v-7" />,
     currency: <><path d="M12 3 20 8l-8 13L4 8l8-5Z" /><path d="M4 8h16" /></>,
     icons: <><path d="m12 3 7 4-7 4-7-4 7-4Z" /><path d="m5 12 7 4 7-4M5 17l7 4 7-4" /></>,
@@ -704,6 +736,86 @@ function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree
     nodeStats: <><path d="M4 6h7m4 0h5M4 12h3m4 0h9M4 18h9m4 0h3" /><path d="M13 4v4M9 10v4M15 16v4" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}
+
+
+function formatSimulatedNumber(value: number) {
+  if (Number.isNaN(value)) return 'NaN';
+  if (value === Number.POSITIVE_INFINITY) return '∞';
+  if (value === Number.NEGATIVE_INFINITY) return '−∞';
+  const rounded = Math.round(value * 1_000_000) / 1_000_000;
+  return Object.is(rounded, -0) ? '0' : String(rounded);
+}
+
+function PlaytestInspector({
+  groups,
+  values,
+  iconMap,
+  unlockedCount,
+  totalNodes,
+}: {
+  groups: StatGroupView[];
+  values: ReadonlyMap<string, number | boolean>;
+  iconMap: ReadonlyMap<string, IconAsset>;
+  unlockedCount: number;
+  totalNodes: number;
+}) {
+  return (
+    <aside className="inspector playtest-inspector has-selection">
+      <div className="inspector-heading">
+        <div>
+          <span className="section-kicker">PLAYTEST</span>
+          <h2>Simulated stats</h2>
+          <p>Values from base stats plus every unlocked skill.</p>
+        </div>
+      </div>
+      <div className="inspector-scroll playtest-inspector-scroll">
+        <div className="playtest-progress">
+          <span>Unlocked skills</span>
+          <strong>{unlockedCount} / {totalNodes}</strong>
+        </div>
+        {groups.length === 0 ? (
+          <div className="playtest-empty-stats">No stats are configured in the stat pool.</div>
+        ) : groups.map((group) => {
+          const groupIcon = group.iconId ? iconMap.get(group.iconId) ?? null : null;
+          return (
+            <section className="playtest-stat-group" key={group.id}>
+              <div className="playtest-stat-group-head">
+                {groupIcon && <MaskedSvgIcon icon={groupIcon} color={group.color} className="playtest-stat-group-icon" />}
+                <div className="playtest-stat-group-copy">
+                  <strong style={{ color: group.color }}>{group.name}</strong>
+                  <span>{group.key}</span>
+                </div>
+              </div>
+              <div className="playtest-stat-list">
+                {group.stats.map((stat) => {
+                  const statIcon = stat.iconId ? iconMap.get(stat.iconId) ?? null : null;
+                  const value = values.get(stat.id) ?? stat.baseValue;
+                  const booleanValue = Boolean(value);
+                  return (
+                    <div className="playtest-stat-row" key={stat.id}>
+                      {statIcon
+                        ? <MaskedSvgIcon icon={statIcon} color="#dfe5ea" className="playtest-stat-icon" />
+                        : <span className="playtest-stat-icon-fallback" aria-hidden="true" />}
+                      <div className="playtest-stat-name">
+                        <strong>{stat.name}</strong>
+                        <span>{stat.key}</span>
+                      </div>
+                      {stat.type === 'boolean' ? (
+                        <span className={`playtest-stat-value boolean${booleanValue ? ' on' : ''}`}>{booleanValue ? 'On' : 'Off'}</span>
+                      ) : (
+                        <span className="playtest-stat-value">{formatSimulatedNumber(Number(value))}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </aside>
+  );
 }
 
 function App() {
@@ -722,6 +834,7 @@ function SkillTreeEditor() {
   const [currencies, setCurrencies] = useState<CurrencyDefinition[]>(initial.currencies);
   const [icons, setIcons] = useState<IconAsset[]>(initial.icons);
   const [activeView, setActiveView] = useState<EditorView>('tree');
+  const [unlockedNodeIds, setUnlockedNodeIds] = useState<Set<string>>(() => new Set());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initial.nodes[0]?.id ?? null);
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<SkillFlowNode, SkillLinkEdge> | null>(null);
   const [savedAt, setSavedAt] = useState('Saved');
@@ -739,8 +852,9 @@ function SkillTreeEditor() {
   const pasteCountRef = useRef(0);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const isPlaytest = activeView === 'playtest';
   const statGroups = useMemo(() => {
-    const groups = new Map<string, { id: string; name: string; key: string; iconId: string | null; color: string; stats: StatDefinition[] }>();
+    const groups = new Map<string, StatGroupView>();
     stats.forEach((stat) => {
       const existing = groups.get(stat.groupId);
       if (existing) {
@@ -814,6 +928,14 @@ function SkillTreeEditor() {
   }, [setEdges, setNodes]);
 
   useEffect(() => {
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    setUnlockedNodeIds((current) => {
+      const next = new Set([...current].filter((id) => nodeIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [nodes]);
+
+  useEffect(() => {
     const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };
     recordHistoryProject(project);
 
@@ -871,11 +993,13 @@ function SkillTreeEditor() {
   const cloneNodeData = useCallback((data: SkillNodeData): SkillNodeData => ({
     name: data.name,
     cost: { ...data.cost },
-    upgrades: data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),
+    upgrades: data.upgrades
+      .filter((upgrade) => stats.find((stat) => stat.id === upgrade.statId)?.type !== 'boolean')
+      .map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),
     primaryIconId: data.primaryIconId,
     secondaryIconId: data.secondaryIconId,
     secondaryColor: data.secondaryColor,
-  }), []);
+  }), [stats]);
 
   const duplicateNode = useCallback((nodeId: string) => {
     const sourceNode = nodes.find((node) => node.id === nodeId);
@@ -909,16 +1033,20 @@ function SkillTreeEditor() {
     showNotice(parentEdges.length ? 'Node duplicated with the same parent links.' : 'Root node duplicated.');
   }, [cloneNodeData, edges, nodes, setEdges, setNodes, showNotice]);
 
-  const beginRightPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+  const beginRightPan = useCallback((event: ReactPointerEvent<HTMLDivElement>, clickAction?: () => void) => {
     if (!rfInstance) return;
     const start = { x: event.clientX, y: event.clientY };
     const initialViewport = rfInstance.getViewport();
+    let dragged = false;
     suppressContextMenuUntilRef.current = Date.now() + 1500;
 
     const onPointerMove = (moveEvent: PointerEvent) => {
+      const dx = moveEvent.clientX - start.x;
+      const dy = moveEvent.clientY - start.y;
+      if (Math.hypot(dx, dy) >= 4) dragged = true;
       void rfInstance.setViewport({
-        x: initialViewport.x + (moveEvent.clientX - start.x),
-        y: initialViewport.y + (moveEvent.clientY - start.y),
+        x: initialViewport.x + dx,
+        y: initialViewport.y + dy,
         zoom: initialViewport.zoom,
       });
     };
@@ -926,6 +1054,7 @@ function SkillTreeEditor() {
       suppressContextMenuUntilRef.current = Date.now() + 250;
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
+      if (!dragged) clickAction?.();
     };
 
     window.addEventListener('pointermove', onPointerMove);
@@ -1106,7 +1235,9 @@ function SkillTreeEditor() {
         data = {
           name: incrementUpgradeName(sourceNode.data.name),
           cost: { ...sourceNode.data.cost },
-          upgrades: sourceNode.data.upgrades.map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),
+          upgrades: sourceNode.data.upgrades
+            .filter((upgrade) => stats.find((stat) => stat.id === upgrade.statId)?.type !== 'boolean')
+            .map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),
           primaryIconId: sourceNode.data.primaryIconId,
           secondaryIconId: sourceNode.data.secondaryIconId,
           secondaryColor: sourceNode.data.secondaryColor,
@@ -1153,9 +1284,22 @@ function SkillTreeEditor() {
     setSelectedNodeId(null);
   }, [selectedNodeId, setNodes, setEdges]);
 
+  const booleanStatUsedElsewhere = useCallback((statId: string, upgradeId?: string) =>
+    nodes.some((node) => node.data.upgrades.some((upgrade) =>
+      upgrade.statId === statId && upgrade.id !== upgradeId,
+    )), [nodes]);
+
+  const hasAvailableUpgradeStat = useMemo(() =>
+    stats.some((stat) => stat.type === 'number' || !booleanStatUsedElsewhere(stat.id)),
+  [booleanStatUsedElsewhere, stats]);
+
   const addUpgrade = () => {
     if (!selectedNode || stats.length === 0) return;
-    const stat = stats[0];
+    const stat = stats.find((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id));
+    if (!stat) {
+      showNotice('Every toggle stat is already assigned to a skill.');
+      return;
+    }
     const upgrade: UpgradeEffect = {
       id: uid('upgrade'),
       statId: stat.id,
@@ -1167,6 +1311,13 @@ function SkillTreeEditor() {
 
   const updateUpgrade = (upgradeId: string, patch: Partial<UpgradeEffect>) => {
     if (!selectedNode) return;
+    if (patch.statId) {
+      const nextStat = stats.find((item) => item.id === patch.statId);
+      if (nextStat?.type === 'boolean' && booleanStatUsedElsewhere(nextStat.id, upgradeId)) {
+        showNotice('That toggle stat is already assigned to another skill.');
+        return;
+      }
+    }
     updateSelectedNode({
       upgrades: selectedNode.data.upgrades.map((upgrade) => {
         if (upgrade.id !== upgradeId) return upgrade;
@@ -1214,6 +1365,7 @@ function SkillTreeEditor() {
           key: composeStatKey(groupKey, localKey),
           name: 'New Stat',
           type: 'number',
+          baseValue: 0,
           iconId: null,
           groupId,
           groupName,
@@ -1237,6 +1389,7 @@ function SkillTreeEditor() {
           key: composeStatKey(group.groupKey, localKey),
           name: 'New Stat',
           type: 'number',
+          baseValue: 0,
           iconId: null,
           groupId,
           groupName: group.groupName,
@@ -1291,7 +1444,19 @@ function SkillTreeEditor() {
   };
 
   const updateStat = (statId: string, patch: Partial<StatDefinition>) => {
-    setStats((current) => current.map((stat) => (stat.id === statId ? { ...stat, ...patch } : stat)));
+    if (patch.type === 'boolean') {
+      const usage = nodes.reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === statId).length, 0);
+      if (usage > 1) {
+        showNotice('Remove duplicate effects before converting this stat to a toggle.');
+        return;
+      }
+    }
+    setStats((current) => current.map((stat) => {
+      if (stat.id !== statId) return stat;
+      const next = { ...stat, ...patch };
+      if (patch.type && patch.type !== stat.type) next.baseValue = patch.type === 'boolean' ? false : 0;
+      return next;
+    }));
     if (patch.type) {
       setNodes((current) => current.map((node) => ({
         ...node,
@@ -1463,6 +1628,7 @@ function SkillTreeEditor() {
         setStats(project.stats);
         setCurrencies(project.currencies);
         setIcons(project.icons);
+        setUnlockedNodeIds(new Set());
         setSelectedNodeId(project.nodes[0]?.id ?? null);
         showNotice('Project imported. DAG validation applied.');
       } catch {
@@ -1550,6 +1716,55 @@ effects: node.data.upgrades.flatMap((upgrade) => {
     });
   }, [edges, nodes]);
 
+
+  const playtestNodes = useMemo<SkillFlowNode[]>(() => nodes.map((node) => ({
+    ...node,
+    selected: false,
+    draggable: false,
+    selectable: false,
+  })), [nodes]);
+
+  const playtestNodeStates = useMemo<ReadonlyMap<string, PlaytestNodeState>>(() =>
+    new Map(nodes.map((node) => [
+      node.id,
+      unlockedNodeIds.has(node.id)
+        ? 'unlocked'
+        : canUnlockPlaytestNode(node.id, unlockedNodeIds, edges)
+          ? 'available'
+          : 'locked',
+    ] as const)),
+  [edges, nodes, unlockedNodeIds]);
+
+  const simulatedStats = useMemo(() =>
+    simulateStatValues(stats, nodes, unlockedNodeIds),
+  [nodes, stats, unlockedNodeIds]);
+
+  const unlockPlaytestNode = useCallback((nodeId: string) => {
+    if (unlockedNodeIds.has(nodeId)) return;
+    if (!canUnlockPlaytestNode(nodeId, unlockedNodeIds, edges)) {
+      showNotice('Unlock every prerequisite first.');
+      return;
+    }
+    setUnlockedNodeIds((current) => {
+      const next = new Set(current);
+      next.add(nodeId);
+      return next;
+    });
+  }, [edges, showNotice, unlockedNodeIds]);
+
+  const lockPlaytestNode = useCallback((nodeId: string) => {
+    if (!unlockedNodeIds.has(nodeId)) return;
+    if (!canLockPlaytestNode(nodeId, unlockedNodeIds, edges)) {
+      showNotice('Lock dependent skills before locking this prerequisite.');
+      return;
+    }
+    setUnlockedNodeIds((current) => {
+      const next = new Set(current);
+      next.delete(nodeId);
+      return next;
+    });
+  }, [edges, showNotice, unlockedNodeIds]);
+
   const gestureLabel = gesture?.kind === 'link'
     ? 'Link prerequisite'
     : gesture?.kind === 'createUpgrade'
@@ -1571,6 +1786,9 @@ effects: node.data.upgrades.flatMap((upgrade) => {
           <button className={activeView === 'tree' ? 'active' : ''} onClick={() => setActiveView('tree')}>
             <Icon name="tree" /> Skill tree
           </button>
+          <button className={activeView === 'playtest' ? 'active' : ''} onClick={() => setActiveView('playtest')}>
+            <Icon name="playtest" /> Playtest
+          </button>
           <button className={activeView === 'stats' ? 'active' : ''} onClick={() => setActiveView('stats')}>
             <Icon name="stats" /> Stat pool
           </button>
@@ -1590,11 +1808,20 @@ effects: node.data.upgrades.flatMap((upgrade) => {
         </div>
       </header>
 
-      {activeView === 'tree' ? (
+      {(activeView === 'tree' || activeView === 'playtest') ? (
         <section className="tree-layout">
           <div className={`flow-panel${gesture ? ' is-gesturing' : ''}`} ref={flowWrapRef}>
             <div className="canvas-toolbar">
-              <button className="primary-button" onClick={() => createNodeAt()}><Icon name="plus" /> Add skill</button>
+              {isPlaytest ? (
+                <div className="playtest-canvas-hint">
+                  <strong>Playtest</strong>
+                  <span>LMB unlock</span>
+                  <span>RMB lock / drag pan</span>
+                  <span>Wheel zoom</span>
+                </div>
+              ) : (
+                <button className="primary-button" onClick={() => createNodeAt()}><Icon name="plus" /> Add skill</button>
+              )}
             </div>
 
             <div className="canvas-display-toolbar" aria-label="Node display options">
@@ -1630,7 +1857,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               </button>
             </div>
 
-            <details className="shortcut-legend" open>
+            <details className="shortcut-legend" open hidden={isPlaytest}>
               <summary>Shortcuts</summary>
               <div className="shortcut-list">
                 <div className="shortcut-row"><kbd>LMB drag node</kbd><span>Move node</span></div>
@@ -1652,7 +1879,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
 
             {notice && <div className="canvas-notice">{notice}</div>}
 
-            {gesture && (
+            {!isPlaytest && gesture && (
               <svg className={`gesture-layer ${gesture.kind}`} aria-hidden="true">
                 <defs>
                   <marker id="gesture-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -1671,27 +1898,37 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               </svg>
             )}
 
-            <SkillInteractionContext.Provider value={{ beginGesture, duplicateNode, beginRightPan, nodeLabels, nodeVisuals }}>
+            <SkillInteractionContext.Provider value={{
+              beginGesture,
+              duplicateNode,
+              beginRightPan,
+              nodeLabels,
+              nodeVisuals,
+              playtestNodeStates: isPlaytest ? playtestNodeStates : EMPTY_PLAYTEST_NODE_STATES,
+              lockPlaytestNode,
+            }}>
               <ReactFlow<SkillFlowNode, SkillLinkEdge>
-                nodes={nodes}
+                nodes={isPlaytest ? playtestNodes : nodes}
                 edges={renderedEdges}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onInit={setRfInstance}
-                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-                onPaneClick={() => setSelectedNodeId(null)}
+                onNodeClick={(_, node) => isPlaytest ? unlockPlaytestNode(node.id) : setSelectedNodeId(node.id)}
+                onPaneClick={() => { if (!isPlaytest) setSelectedNodeId(null); }}
                 onPaneContextMenu={(event) => event.preventDefault()}
                 panOnDrag={[0, 2]}
                 fitView
                 fitViewOptions={{ padding: 0.25 }}
                 minZoom={0.25}
                 maxZoom={2.5}
+                nodesDraggable={!isPlaytest}
+                elementsSelectable={!isPlaytest}
                 nodesConnectable={false}
                 edgesReconnectable={false}
                 defaultEdgeOptions={{ type: 'skillLink' }}
-                deleteKeyCode={['Backspace', 'Delete']}
+                deleteKeyCode={isPlaytest ? [] : ['Backspace', 'Delete']}
                 multiSelectionKeyCode="Shift"
                 proOptions={{ hideAttribution: true }}
                 colorMode="dark"
@@ -1701,6 +1938,15 @@ effects: node.data.upgrades.flatMap((upgrade) => {
             </SkillInteractionContext.Provider>
           </div>
 
+          {isPlaytest ? (
+            <PlaytestInspector
+              groups={statGroups}
+              values={simulatedStats}
+              iconMap={iconMap}
+              unlockedCount={unlockedNodeIds.size}
+              totalNodes={nodes.length}
+            />
+          ) : (
           <aside className={`inspector${selectedNode ? ' has-selection' : ''}`}>
             <div className="inspector-heading">
               <div>
@@ -1818,7 +2064,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
       <section className="inspector-section">
         <div className="section-title-row">
           <div><h3>Upgrade stats</h3><p>Typed effects applied when purchased.</p></div>
-                    <button className="small-button" onClick={addUpgrade} disabled={stats.length === 0}><Icon name="plus" /> Add</button>
+                    <button className="small-button" onClick={addUpgrade} disabled={!hasAvailableUpgradeStat}><Icon name="plus" /> Add</button>
                   </div>
                   {selectedNode.data.upgrades.length === 0 ? (
                     <div className="inline-empty">No effects yet. Add one from your stat pool.</div>
@@ -1834,7 +2080,10 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                               <select value={upgrade.statId} onChange={(e) => updateUpgrade(upgrade.id, { statId: e.target.value })}>
                                 {statGroups.map((group) => (
                                   <optgroup key={group.id} label={group.name}>
-                                    {group.stats.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                                    {group.stats.map((item) => {
+                                      const unavailable = item.type === 'boolean' && booleanStatUsedElsewhere(item.id, upgrade.id);
+                                      return <option key={item.id} value={item.id} disabled={unavailable}>{item.name}{unavailable ? ' — already used' : ''}</option>;
+                                    })}
                                   </optgroup>
                                 ))}
                               </select>
@@ -1903,6 +2152,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               </div>
             )}
           </aside>
+          )}
         </section>
       ) : activeView === 'stats' ? (
         <section className="stat-pool-view">
@@ -1958,7 +2208,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                   </div>
                   <div className="stat-table-card">
                     <div className="stat-table-header with-icons">
-                      <span>Display name</span><span>Game key</span><span>Icon</span><span>Type</span><span>Used by</span><span />
+                      <span>Display name</span><span>Game key</span><span>Icon</span><span>Type</span><span>Base value</span><span>Used by</span><span />
                     </div>
                     {group.stats.map((stat) => {
                       const usage = nodes.reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === stat.id).length, 0);
@@ -1987,6 +2237,25 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                             />
                           </div>
                           <label><span className="mobile-label">Type</span><select value={stat.type} onChange={(e) => updateStat(stat.id, { type: e.target.value as StatType })}><option value="number">Number</option><option value="boolean">Toggle</option></select></label>
+                          <div className="stat-base-cell">
+                            <span className="mobile-label">Base value</span>
+                            {stat.type === 'number' ? (
+                              <input
+                                type="number"
+                                step="any"
+                                value={Number(stat.baseValue)}
+                                onChange={(event) => {
+                                  const value = Number(event.target.value);
+                                  if (Number.isFinite(value)) updateStat(stat.id, { baseValue: value });
+                                }}
+                              />
+                            ) : (
+                              <label className="stat-base-toggle">
+                                <input type="checkbox" checked={Boolean(stat.baseValue)} onChange={(event) => updateStat(stat.id, { baseValue: event.target.checked })} />
+                                <span>{Boolean(stat.baseValue) ? 'On' : 'Off'}</span>
+                              </label>
+                            )}
+                          </div>
                           <div className="usage-cell"><span className={`type-dot ${stat.type}`} />{usage} effect{usage === 1 ? '' : 's'}</div>
                           <button className="row-delete" onClick={() => deleteStat(stat.id)} aria-label={`Delete ${stat.name}`}><Icon name="trash" /></button>
                         </div>
