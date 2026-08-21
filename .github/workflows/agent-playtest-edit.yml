@@ -1,0 +1,72 @@
+name: Apply playtest implementation
+run-name: Apply playtest implementation
+
+on:
+  push:
+    branches:
+      - agent/playtest-simulation-20260820
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: agent/playtest-simulation-20260820
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply implementation
+        run: python scripts/agent_playtest_edit.py
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Production build
+        run: npm run build
+
+      - name: Smoke test production output
+        shell: bash
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/skill-tree-preview.log 2>&1 &
+          PREVIEW_PID=$!
+          trap 'kill $PREVIEW_PID 2>/dev/null || true' EXIT
+          READY=0
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error http://127.0.0.1:4173/Skill-Tree-Maker/ -o /tmp/skill-tree-index.html; then
+              READY=1
+              break
+            fi
+            sleep 0.5
+          done
+          test "$READY" = "1"
+          grep -q '/Skill-Tree-Maker/assets/' /tmp/skill-tree-index.html
+          ASSET=$(python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path('/tmp/skill-tree-index.html').read_text()
+          match = re.search(r'["\x27](/Skill-Tree-Maker/assets/[^"\x27]+)["\x27]', html)
+          if not match:
+              raise SystemExit('No built asset URL found')
+          print(match.group(1))
+          PY
+          )
+          curl --fail --silent --show-error "http://127.0.0.1:4173${ASSET}" -o /dev/null
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git checkout -- package-lock.json 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo 'Patch produced no changes'; exit 1; }
+          git commit -m "Add playtest simulation mode"
+          git push origin HEAD:agent/playtest-simulation-20260820
