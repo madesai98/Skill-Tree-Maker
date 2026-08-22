@@ -35,12 +35,13 @@ import type { HistoryApplyDetail } from './history';
 import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
 import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, svgDataUrl, type IconAsset } from './iconPool';
 import { canLockPlaytestNode, canUnlockPlaytestNode, simulateStatValues } from './playtest';
+import PerksView from './PerksView';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
 type BooleanOperator = 'set';
 type UpgradeOperator = NumberOperator | BooleanOperator;
-type EditorView = 'tree' | 'playtest' | 'stats' | 'currencies' | 'icons';
+type EditorView = 'tree' | 'perks' | 'playtest' | 'stats' | 'currencies' | 'icons';
 
 type Point = { x: number; y: number };
 type PlaytestNodeState = 'locked' | 'available' | 'unlocked';
@@ -118,6 +119,8 @@ type PersistedProject = {
   stats: StatDefinition[];
   currencies: CurrencyDefinition[];
   icons: IconAsset[];
+  perks: SkillFlowNode[];
+  perkGridSize: number;
 };
 
 type GestureKind = 'link' | 'createBlank' | 'createUpgrade';
@@ -341,6 +344,8 @@ function defaultProject(): PersistedProject {
     stats: starterStats,
     currencies: starterCurrencies,
     icons: [],
+    perks: [],
+    perkGridSize: 140,
   };
 }
 
@@ -464,6 +469,18 @@ function normalizeIcons(raw: unknown): IconAsset[] {
   });
 }
 
+function perkIdFromName(name: string) {
+  return name.toLowerCase().replaceAll(' ', '.');
+}
+
+function uniqueImportedPerkName(baseName: string, usedNames: Set<string>, usedIds: Set<string>) {
+  const base = baseName.trim() || 'New Perk';
+  if (!usedNames.has(base.toLowerCase()) && !usedIds.has(perkIdFromName(base))) return base;
+  let index = 2;
+  while (usedNames.has(`${base} ${index}`.toLowerCase()) || usedIds.has(perkIdFromName(`${base} ${index}`))) index += 1;
+  return `${base} ${index}`;
+}
+
 function migrateProject(raw: unknown): PersistedProject | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Record<string, unknown>;
@@ -559,6 +576,40 @@ function migrateProject(raw: unknown): PersistedProject | null {
     }];
   });
 
+  const perkGridSize = typeof value.perkGridSize === 'number' && Number.isFinite(value.perkGridSize)
+    ? Math.max(72, Math.min(320, Math.round(value.perkGridSize)))
+    : 140;
+  const rawPerks = Array.isArray(value.perks) ? value.perks : [];
+  const migratedPerks = rawPerks.length > 0
+    ? migrateProject({ version: 2, nodes: rawPerks, edges: [], stats, currencies, icons })?.nodes ?? []
+    : [];
+  const usedPerkNames = new Set<string>();
+  const usedPerkIds = new Set<string>();
+  const booleanStatsUsedBySkills = new Set(nodes.flatMap((node) => node.data.upgrades.flatMap((upgrade) =>
+    statMap.get(upgrade.statId)?.type === 'boolean' ? [upgrade.statId] : [],
+  )));
+  const perks = migratedPerks.map((node, index) => {
+    const name = uniqueImportedPerkName(node.data.name || `Perk ${index + 1}`, usedPerkNames, usedPerkIds);
+    const id = perkIdFromName(name);
+    usedPerkNames.add(name.toLowerCase());
+    usedPerkIds.add(id);
+    return {
+      ...node,
+      id,
+      position: {
+        x: Math.round(node.position.x / perkGridSize) * perkGridSize,
+        y: Math.round(node.position.y / perkGridSize) * perkGridSize,
+      },
+      data: {
+        ...node.data,
+        name,
+        upgrades: node.data.upgrades.filter((upgrade) =>
+          statMap.get(upgrade.statId)?.type !== 'boolean' || !booleanStatsUsedBySkills.has(upgrade.statId),
+        ),
+      },
+    };
+  });
+
   return {
     version: 2,
     nodes,
@@ -566,6 +617,8 @@ function migrateProject(raw: unknown): PersistedProject | null {
     stats,
     currencies,
     icons,
+    perks,
+    perkGridSize,
   };
 }
 
@@ -719,13 +772,14 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 const nodeTypes = { skill: SkillNode };
 const edgeTypes = { skillLink: SkillLinkEdgeComponent };
 
-function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'playtest' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
+function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'perks' | 'playtest' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
   const paths: Record<string, ReactElement> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />,
     download: <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14" />,
     upload: <path d="M12 17V5m0 0 4 4m-4-4-4 4M5 20h14" />,
     tree: <path d="M12 4v5m0 0-5 4m5-4 5 4M7 13v5m10-5v5M4 18h6m4 0h6" />,
+    perks: <><circle cx="7" cy="7" r="2.4" /><circle cx="17" cy="7" r="2.4" /><circle cx="7" cy="17" r="2.4" /><circle cx="17" cy="17" r="2.4" /></>,
     playtest: <path d="M8 5v14l11-7-11-7Z" />,
     stats: <path d="M5 19V9m7 10V5m7 14v-7" />,
     currency: <><path d="M12 3 20 8l-8 13L4 8l8-5Z" /><path d="M4 8h16" /></>,
@@ -863,6 +917,8 @@ function SkillTreeEditor() {
   const [stats, setStats] = useState<StatDefinition[]>(initial.stats);
   const [currencies, setCurrencies] = useState<CurrencyDefinition[]>(initial.currencies);
   const [icons, setIcons] = useState<IconAsset[]>(initial.icons);
+  const [perks, setPerks] = useState<SkillFlowNode[]>(initial.perks);
+  const [perkGridSize, setPerkGridSize] = useState(initial.perkGridSize);
   const [activeView, setActiveView] = useState<EditorView>('tree');
   const [unlockedNodeIds, setUnlockedNodeIds] = useState<Set<string>>(() => new Set());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initial.nodes[0]?.id ?? null);
@@ -939,6 +995,22 @@ function SkillTreeEditor() {
       if (touched.has('icons')) {
         setIcons((current) => applyHistoryTransitionsToCollection(current, 'icons', detail.transitions));
       }
+      if (touched.has('perks')) {
+        setPerks((current) => applyHistoryTransitionsToCollection(current, 'perks', detail.transitions));
+      }
+      if (touched.has('perkGridSize')) {
+        setPerkGridSize((current) => {
+          let next = current;
+          detail.transitions.forEach((transition) => {
+            transition.changes.forEach((change) => {
+              if (change.key.length !== 1 || change.key[0] !== 'perkGridSize') return;
+              const value = transition.direction === 'undo' ? change.oldValue : change.newValue;
+              if (typeof value === 'number' && Number.isFinite(value)) next = value;
+            });
+          });
+          return next;
+        });
+      }
 
       const removedNodeIds = new Set<string>();
       detail.transitions.forEach((transition) => {
@@ -966,7 +1038,7 @@ function SkillTreeEditor() {
   }, [nodes]);
 
   useEffect(() => {
-    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons };
+    const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons, perks, perkGridSize };
     recordHistoryProject(project);
 
     const timer = window.setTimeout(() => {
@@ -974,7 +1046,7 @@ function SkillTreeEditor() {
       setSavedAt(`Saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [nodes, edges, stats, currencies, icons]);
+  }, [nodes, edges, stats, currencies, icons, perks, perkGridSize]);
 
   const addDirectedEdge = useCallback((source: string, target: string) => {
     const issue = edgeIssue(source, target, edges);
@@ -1315,9 +1387,9 @@ function SkillTreeEditor() {
   }, [selectedNodeId, setNodes, setEdges]);
 
   const booleanStatUsedElsewhere = useCallback((statId: string, upgradeId?: string) =>
-    nodes.some((node) => node.data.upgrades.some((upgrade) =>
+    [...nodes, ...perks].some((node) => node.data.upgrades.some((upgrade) =>
       upgrade.statId === statId && upgrade.id !== upgradeId,
-    )), [nodes]);
+    )), [nodes, perks]);
 
   const hasAvailableUpgradeStat = useMemo(() =>
     stats.some((stat) => stat.type === 'number' || !booleanStatUsedElsewhere(stat.id)),
@@ -1475,7 +1547,7 @@ function SkillTreeEditor() {
 
   const updateStat = (statId: string, patch: Partial<StatDefinition>) => {
     if (patch.type === 'boolean') {
-      const usage = nodes.reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === statId).length, 0);
+      const usage = [...nodes, ...perks].reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === statId).length, 0);
       if (usage > 1) {
         showNotice('Remove duplicate effects before converting this stat to a toggle.');
         return;
@@ -1488,7 +1560,7 @@ function SkillTreeEditor() {
       return next;
     }));
     if (patch.type) {
-      setNodes((current) => current.map((node) => ({
+      const updateNodeEffects = (current: SkillFlowNode[]) => current.map((node) => ({
         ...node,
         data: {
           ...node.data,
@@ -1499,7 +1571,9 @@ function SkillTreeEditor() {
               : { ...upgrade, operator: 'add' as const, value: 1 };
           }),
         },
-      })));
+      }));
+      setNodes(updateNodeEffects);
+      setPerks(updateNodeEffects);
     }
   };
 
@@ -1511,10 +1585,12 @@ function SkillTreeEditor() {
 
   const deleteStat = (statId: string) => {
     setStats((current) => current.filter((stat) => stat.id !== statId));
-    setNodes((current) => current.map((node) => ({
+    const removeStatEffects = (current: SkillFlowNode[]) => current.map((node) => ({
       ...node,
       data: { ...node.data, upgrades: node.data.upgrades.filter((upgrade) => upgrade.statId !== statId) },
-    })));
+    }));
+    setNodes(removeStatEffects);
+    setPerks(removeStatEffects);
   };
 
   const addCurrency = () => {
@@ -1523,11 +1599,13 @@ function SkillTreeEditor() {
       ...current,
       { id, key: `currency.${current.length + 1}`, name: 'New Currency', iconId: null, color: '#b6ff56' },
     ]);
-    setNodes((current) => current.map((node) =>
+    const assignCurrency = (current: SkillFlowNode[]) => current.map((node) =>
       node.data.cost.currencyId
         ? node
         : { ...node, data: { ...node.data, cost: { ...node.data.cost, currencyId: id } } },
-    ));
+    );
+    setNodes(assignCurrency);
+    setPerks(assignCurrency);
   };
 
   const updateCurrency = (currencyId: string, patch: Partial<CurrencyDefinition>) => {
@@ -1540,11 +1618,13 @@ function SkillTreeEditor() {
     setCurrencies((current) => {
       const next = current.filter((currency) => currency.id !== currencyId);
       const replacement = next[0]?.id ?? '';
-      setNodes((nodeList) => nodeList.map((node) =>
+      const replaceCurrency = (nodeList: SkillFlowNode[]) => nodeList.map((node) =>
         node.data.cost.currencyId === currencyId
           ? { ...node, data: { ...node.data, cost: { ...node.data.cost, currencyId: replacement } } }
           : node,
-      ));
+      );
+      setNodes(replaceCurrency);
+      setPerks(replaceCurrency);
       return next;
     });
   };
@@ -1589,8 +1669,8 @@ function SkillTreeEditor() {
   const iconUsageCount = (iconId: string) => {
     const groupIds = new Set<string>();
     let count = currencies.filter((currency) => currency.iconId === iconId).length;
-    count += nodes.filter((node) => node.data.primaryIconId === iconId).length;
-    count += nodes.filter((node) => node.data.secondaryIconId === iconId).length;
+    count += [...nodes, ...perks].filter((node) => node.data.primaryIconId === iconId).length;
+    count += [...nodes, ...perks].filter((node) => node.data.secondaryIconId === iconId).length;
     stats.forEach((stat) => {
       if (stat.iconId === iconId) count += 1;
       if (stat.groupIconId === iconId && !groupIds.has(stat.groupId)) {
@@ -1614,14 +1694,16 @@ function SkillTreeEditor() {
       ...currency,
       iconId: currency.iconId === iconId ? null : currency.iconId,
     })));
-    setNodes((current) => current.map((node) => ({
+    const clearNodeIcon = (current: SkillFlowNode[]) => current.map((node) => ({
       ...node,
       data: {
         ...node.data,
         primaryIconId: node.data.primaryIconId === iconId ? null : node.data.primaryIconId,
         secondaryIconId: node.data.secondaryIconId === iconId ? null : node.data.secondaryIconId,
       },
-    })));
+    }));
+    setNodes(clearNodeIcon);
+    setPerks(clearNodeIcon);
     showNotice('Icon deleted and cleared from its assignments.');
   };
 
@@ -1635,7 +1717,14 @@ function SkillTreeEditor() {
         resolvedAppearance: resolveSkillAppearance(node.data, statMap, iconIds),
       },
     }));
-    const project = { version: 2, nodes: exportNodes, edges, stats, currencies, icons };
+    const exportPerks = perks.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        resolvedAppearance: resolveSkillAppearance(node.data, statMap, iconIds),
+      },
+    }));
+    const project = { version: 2, nodes: exportNodes, edges, stats, currencies, icons, perks: exportPerks, perkGridSize };
     const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1658,6 +1747,8 @@ function SkillTreeEditor() {
         setStats(project.stats);
         setCurrencies(project.currencies);
         setIcons(project.icons);
+        setPerks(project.perks);
+        setPerkGridSize(project.perkGridSize);
         setUnlockedNodeIds(new Set());
         setSelectedNodeId(project.nodes[0]?.id ?? null);
         showNotice('Project imported. DAG validation applied.');
@@ -1826,6 +1917,9 @@ effects: node.data.upgrades.flatMap((upgrade) => {
         <nav className="view-switcher" aria-label="Editor view">
           <button className={activeView === 'tree' ? 'active' : ''} onClick={() => setActiveView('tree')}>
             <Icon name="tree" /> Skill tree
+          </button>
+          <button className={activeView === 'perks' ? 'active' : ''} onClick={() => setActiveView('perks')}>
+            <Icon name="perks" /> Perks
           </button>
           <button className={activeView === 'playtest' ? 'active' : ''} onClick={() => setActiveView('playtest')}>
             <Icon name="playtest" /> Playtest
@@ -2197,6 +2291,18 @@ effects: node.data.upgrades.flatMap((upgrade) => {
           </aside>
           )}
         </section>
+      ) : activeView === 'perks' ? (
+        <PerksView
+          perks={perks}
+          setPerks={setPerks}
+          skills={nodes}
+          stats={stats}
+          currencies={currencies}
+          icons={icons}
+          gridSize={perkGridSize}
+          setGridSize={setPerkGridSize}
+          onAddIcon={addIconAsset}
+        />
       ) : activeView === 'stats' ? (
         <section className="stat-pool-view">
           <div className="stat-pool-head">
@@ -2254,7 +2360,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                       <span>Display name</span><span>Game key</span><span>Icon</span><span>Type</span><span>Base value</span><span>Used by</span><span />
                     </div>
                     {group.stats.map((stat) => {
-                      const usage = nodes.reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === stat.id).length, 0);
+                      const usage = [...nodes, ...perks].reduce((total, node) => total + node.data.upgrades.filter((upgrade) => upgrade.statId === stat.id).length, 0);
                       return (
                         <div className="stat-row with-icons" key={stat.id}>
                           <label><span className="mobile-label">Display name</span><input value={stat.name} onChange={(e) => updateStat(stat.id, { name: e.target.value })} /></label>
@@ -2339,7 +2445,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
             {currencies.length === 0 ? (
               <div className="stat-empty"><h3>No currencies configured</h3><p>Add a currency to make it available for skill costs.</p></div>
             ) : currencies.map((currency) => {
-              const usage = nodes.filter((node) => node.data.cost.currencyId === currency.id).length;
+              const usage = [...nodes, ...perks].filter((node) => node.data.cost.currencyId === currency.id).length;
               return (
                 <div className="currency-row with-icons" key={currency.id}>
                   <label><span className="mobile-label">Display name</span><input value={currency.name} onChange={(e) => updateCurrency(currency.id, { name: e.target.value })} /></label>

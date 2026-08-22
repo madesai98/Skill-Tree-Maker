@@ -11,6 +11,7 @@ import './shortcutLegend.css';
 import './nodeLabels.css';
 import './iconPool.css';
 import './playtest.css';
+import './perks.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(

@@ -154,6 +154,8 @@ function describeEntry(changes: AtomicHistoryChange[]) {
     && (created ? !change.oldExists && change.newExists : change.oldExists && !change.newExists));
   if (structural('nodes', true)) return 'Added skill';
   if (structural('nodes', false)) return 'Removed skill';
+  if (structural('perks', true)) return 'Added perk';
+  if (structural('perks', false)) return 'Removed perk';
   if (structural('edges', true)) return 'Added prerequisite';
   if (structural('edges', false)) return 'Removed prerequisite';
   if (structural('stats', true)) return 'Added stat';
@@ -165,11 +167,15 @@ function describeEntry(changes: AtomicHistoryChange[]) {
   if (changes.some((change) => change.key.includes('upgrades') && !change.oldExists && change.newExists)) return 'Added skill effect';
   if (changes.some((change) => change.key.includes('upgrades') && change.oldExists && !change.newExists)) return 'Removed skill effect';
   if (changes.some((change) => change.key[0] === 'nodes' && change.key.includes('position'))) return 'Moved skill';
+  if (changes.some((change) => change.key[0] === 'perks' && change.key.includes('position'))) return 'Moved perk';
   if (changes.some((change) => change.key[0] === 'nodes' && change.key.at(-1) === 'name')) return 'Renamed skill';
+  if (changes.some((change) => change.key[0] === 'perks' && change.key.at(-1) === 'name')) return 'Renamed perk';
   if (changes.some((change) => change.key[0] === 'stats')) return 'Edited stat pool';
   if (changes.some((change) => change.key[0] === 'currencies')) return 'Edited currencies';
   if (changes.some((change) => change.key[0] === 'icons')) return 'Edited icon pool';
   if (changes.some((change) => change.key[0] === 'nodes')) return 'Edited skill';
+  if (changes.some((change) => change.key[0] === 'perks')) return 'Edited perk';
+  if (changes.some((change) => change.key[0] === 'perkGridSize')) return 'Changed perk grid';
   return 'Project change';
 }
 
