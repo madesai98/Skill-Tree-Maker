@@ -1,4 +1,5 @@
-.perks-layout {
+.perks-layout,
+.perks-flow-panel {
   min-width: 0;
 }
 
