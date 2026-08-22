@@ -69,6 +69,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main:refs/remotes/origin/main
           git checkout origin/main -- .github/workflows/ci.yml
           git rm -f scripts/add-perks.mjs scripts/run-add-perks.mjs .github/workflows/apply-perks.yml
           git add src/App.tsx src/main.tsx src/projectData.ts src/history.ts src/PerksView.tsx src/perks.css .github/workflows/ci.yml
