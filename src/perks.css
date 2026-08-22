@@ -1,3 +1,7 @@
+.perks-layout {
+  min-width: 0;
+}
+
 .perks-flow-panel .react-flow__background {
   opacity: 0.45;
 }
