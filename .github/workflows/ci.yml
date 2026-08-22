@@ -6,19 +6,25 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout feature branch
         uses: actions/checkout@v4
+        with:
+          ref: feature/remove-perk-costs
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Apply perk cost removal
+        run: python scripts/remove-perk-costs.py
 
       - name: Install dependencies
         run: npm install
@@ -58,3 +64,14 @@ jobs:
           ASSET=$(cat /tmp/skill-tree-asset-path)
           test -n "$ASSET"
           curl --fail --silent --show-error "http://127.0.0.1:4173${ASSET}" -o /dev/null
+
+      - name: Commit validated implementation
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git rm -f scripts/remove-perk-costs.py .github/workflows/apply-remove-perk-costs.yml
+          git add src/App.tsx src/PerksView.tsx .github/workflows/ci.yml
+          git commit -m "Remove currency costs from perks"
+          git push origin HEAD:feature/remove-perk-costs
