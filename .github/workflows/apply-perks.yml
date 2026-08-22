@@ -2,9 +2,9 @@ name: Apply perks implementation
 run-name: Apply and validate perks grid editor
 
 on:
-  push:
+  pull_request:
     branches:
-      - feature/perks-grid-editor
+      - main
 
 permissions:
   contents: write
@@ -14,8 +14,10 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out branch
+      - name: Check out feature branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
