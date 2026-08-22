@@ -1,0 +1,59 @@
+.perks-flow-panel .react-flow__background {
+  opacity: 0.45;
+}
+
+.perks-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.perk-grid-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 5px 9px;
+  border: 1px solid #303943;
+  border-radius: 9px;
+  background: rgba(16, 21, 26, 0.92);
+  color: #9da8b2;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.perk-grid-size-control input {
+  width: 70px;
+  height: 26px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  text-align: right;
+}
+
+.perk-node {
+  cursor: grab;
+}
+
+.perk-node:active {
+  cursor: grabbing;
+}
+
+.perk-id-note {
+  margin-top: -5px;
+  color: #707b86;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (max-width: 760px) {
+  .perks-canvas-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .perk-grid-size-control {
+    width: max-content;
+  }
+}
