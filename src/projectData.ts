@@ -7,6 +7,8 @@ export type CanonicalProject = {
   stats: JsonRecord[];
   currencies: JsonRecord[];
   icons: JsonRecord[];
+  perks: JsonRecord[];
+  perkGridSize: number;
 };
 
 export type AtomicHistoryChange = {
@@ -70,10 +72,27 @@ export function normalizeProject(raw: unknown): CanonicalProject | null {
       }];
     });
 
+    const perks = Array.isArray(parsed.perks)
+      ? parsed.perks.flatMap<JsonRecord>((item) => {
+        if (!isRecord(item) || typeof item.id !== 'string') return [];
+        return [{
+          id: item.id,
+          type: item.type ?? 'skill',
+          position: cloneValue(item.position),
+          data: cloneValue(item.data),
+        }];
+      })
+      : [];
+    const perkGridSize = typeof parsed.perkGridSize === 'number' && Number.isFinite(parsed.perkGridSize)
+      ? Math.max(72, Math.min(320, Math.round(parsed.perkGridSize)))
+      : 140;
+
     return {
       version: 2,
       nodes,
       edges,
+      perks,
+      perkGridSize,
       stats: parsed.stats.filter(isRecord).map((item) => cloneValue(item)),
       currencies: Array.isArray(parsed.currencies)
         ? parsed.currencies.filter(isRecord).map((item) => cloneValue(item))
@@ -90,6 +109,8 @@ export function normalizeProject(raw: unknown): CanonicalProject | null {
 export function createStarterProject(): CanonicalProject {
   return {
     version: 2,
+    perks: [],
+    perkGridSize: 140,
     nodes: [
       {
         id: 'skill-core',
@@ -169,6 +190,8 @@ export function createBlankProject(seed?: CanonicalProject | null): CanonicalPro
     version: 2,
     nodes: [],
     edges: [],
+    perks: [],
+    perkGridSize: basis.perkGridSize,
     stats: cloneValue(basis.stats),
     currencies: cloneValue(basis.currencies),
     icons: cloneValue(basis.icons),
@@ -269,6 +292,8 @@ export function diffProjects(before: CanonicalProject, after: CanonicalProject) 
   diffValue(before.stats, after.stats, ['stats'], changes);
   diffValue(before.currencies, after.currencies, ['currencies'], changes);
   diffValue(before.icons, after.icons, ['icons'], changes);
+  diffValue(before.perks, after.perks, ['perks'], changes);
+  diffValue(before.perkGridSize, after.perkGridSize, ['perkGridSize'], changes);
   return changes;
 }
 
@@ -338,7 +363,7 @@ export function sourceSideForDirection(change: AtomicHistoryChange, direction: H
 
 export function applyHistoryTransitionsToCollection<T>(
   current: T[],
-  collection: 'nodes' | 'edges' | 'stats' | 'currencies' | 'icons',
+  collection: 'nodes' | 'edges' | 'stats' | 'currencies' | 'icons' | 'perks',
   transitions: HistoryTransition[],
 ): T[] {
   let next: unknown = current;
@@ -409,7 +434,9 @@ function entityKey(collection: string, id: string) {
           ? 'currency'
           : collection === 'icons'
             ? 'icon'
-            : collection;
+            : collection === 'perks'
+              ? 'perk'
+              : collection;
   return `${singular}:${id}`;
 }
 
@@ -444,7 +471,7 @@ export function touchedEntityKeys(before: CanonicalProject, after: CanonicalProj
   changes.forEach((change) => {
     const [collection, id, ...path] = change.key;
     if (!collection || !id) return;
-    if (['nodes', 'edges', 'stats', 'currencies', 'icons'].includes(collection)) touched.add(entityKey(collection, id));
+    if (['nodes', 'edges', 'stats', 'currencies', 'icons', 'perks'].includes(collection)) touched.add(entityKey(collection, id));
 
     if (collection === 'edges') {
       const oldEdge = collectionEntity(before, 'edges', id);
@@ -457,9 +484,10 @@ export function touchedEntityKeys(before: CanonicalProject, after: CanonicalProj
       });
     }
 
-    if (collection === 'nodes') {
-      const oldNode = collectionEntity(before, 'nodes', id);
-      const newNode = collectionEntity(after, 'nodes', id);
+    if (collection === 'nodes' || collection === 'perks') {
+      const collectionKey = collection as 'nodes' | 'perks';
+      const oldNode = collectionEntity(before, collectionKey, id);
+      const newNode = collectionEntity(after, collectionKey, id);
       const touchesCostRelation = path.length === 0 || path.join('/').includes('data/cost/currencyId');
       const touchesUpgradeRelation = path.length === 0 || path.includes('upgrades');
       if (touchesCostRelation || touchesUpgradeRelation) {
@@ -494,6 +522,7 @@ export function guardEntityKeys(changes: AtomicHistoryChange[]) {
   if (guardChangedNodes) {
     changes.forEach((change) => {
       if (change.key[0] === 'nodes' && change.key[1]) guards.add(`node:${change.key[1]}`);
+      if (change.key[0] === 'perks' && change.key[1]) guards.add(`perk:${change.key[1]}`);
     });
   }
 
