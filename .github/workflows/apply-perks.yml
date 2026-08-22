@@ -1,0 +1,42 @@
+name: Apply perks implementation
+run-name: Apply and validate perks grid editor
+
+on:
+  push:
+    branches:
+      - feature/perks-grid-editor
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply project integration
+        run: node scripts/add-perks.mjs
+
+      - name: Build production app
+        run: npm run build
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/add-perks.mjs .github/workflows/apply-perks.yml
+          git add src/App.tsx src/main.tsx src/projectData.ts src/history.ts src/PerksView.tsx src/perks.css
+          git commit -m "Add perks grid editor"
+          git push origin HEAD:feature/perks-grid-editor
