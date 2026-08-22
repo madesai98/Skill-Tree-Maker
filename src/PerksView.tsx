@@ -41,15 +41,6 @@ type StatDefinition = {
   groupColor: string;
 };
 
-type CurrencyDefinition = {
-  id: string;
-  key: string;
-  name: string;
-  iconId: string | null;
-  color: string;
-  symbol?: string;
-};
-
 type UpgradeEffect = {
   id: string;
   statId: string;
@@ -57,11 +48,8 @@ type UpgradeEffect = {
   value: number | boolean;
 };
 
-type SkillCost = { currencyId: string; amount: number };
-
 type PerkNodeData = {
   name: string;
-  cost: SkillCost;
   upgrades: UpgradeEffect[];
   primaryIconId: string | null;
   secondaryIconId: string | null;
@@ -76,7 +64,6 @@ type PerksViewProps = {
   setPerks: Dispatch<SetStateAction<PerkFlowNode[]>>;
   skills: SkillLikeNode[];
   stats: StatDefinition[];
-  currencies: CurrencyDefinition[];
   icons: IconAsset[];
   gridSize: number;
   setGridSize: Dispatch<SetStateAction<number>>;
@@ -87,8 +74,6 @@ type PerkVisual = {
   primaryIcon: IconAsset | null;
   secondaryIcon: IconAsset | null;
   secondaryColor: string;
-  currencyIcon: IconAsset | null;
-  currencyColor: string;
 };
 
 type InteractionContextValue = {
@@ -146,12 +131,10 @@ function MaskedSvgIcon({ icon, color, className }: { icon: IconAsset | null | un
   );
 }
 
-function ToolbarIcon({ name }: { name: 'plus' | 'currency' | 'name' | 'stats' | 'trash' | 'close' }) {
+function ToolbarIcon({ name }: { name: 'plus' | 'name' | 'stats' | 'trash' | 'close' }) {
   const path = name === 'plus'
     ? <path d="M12 5v14M5 12h14" />
-    : name === 'currency'
-      ? <><path d="M12 3 20 8l-8 13L4 8l8-5Z" /><path d="M4 8h16" /></>
-      : name === 'name'
+    : name === 'name'
         ? <><path d="M5 6h14M12 6v12M8.5 18h7" /><path d="M7 9V6m10 3V6" /></>
         : name === 'stats'
           ? <><path d="M4 6h7m4 0h5M4 12h3m4 0h9M4 18h9m4 0h3" /><path d="M13 4v4M9 10v4M15 16v4" /></>
@@ -200,12 +183,6 @@ function PerkNode({ id, selected }: NodeProps<PerkFlowNode>) {
         : <span className="skill-node-primary-fallback" aria-hidden="true" />}
       {label && (
         <div className="skill-node-label" style={{ left: `${label.left}px`, top: `${label.top}px`, width: `${label.width}px`, textAlign: label.align }} aria-hidden="true">
-          {label.currency && (
-            <div className="skill-node-label-currency" style={{ color: visual?.currencyColor ?? '#ffffff' }}>
-              {visual?.currencyIcon && <MaskedSvgIcon icon={visual.currencyIcon} color={visual.currencyColor} className="skill-node-label-currency-icon" />}
-              <span>{label.currency.text}</span>
-            </div>
-          )}
           {label.name && <div className="skill-node-label-name" style={{ color: visual?.secondaryColor ?? '#ffffff' }}>{label.name}</div>}
           {label.effects.length > 0 && (
             <div className="skill-node-label-effects">
@@ -229,9 +206,8 @@ function snapPosition(position: { x: number; y: number }, gridSize: number) {
   return { x: Math.round(position.x / gridSize) * gridSize, y: Math.round(position.y / gridSize) * gridSize };
 }
 
-function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize, setGridSize, onAddIcon }: PerksViewProps) {
+function PerksView({ perks, setPerks, skills, stats, icons, gridSize, setGridSize, onAddIcon }: PerksViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(perks[0]?.id ?? null);
-  const [showCurrency, setShowCurrency] = useState(true);
   const [showNames, setShowNames] = useState(true);
   const [showStats, setShowStats] = useState(true);
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<PerkFlowNode> | null>(null);
@@ -247,7 +223,6 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
   const statMap = useMemo(() => new Map(stats.map((stat) => [stat.id, stat])), [stats]);
   const iconMap = useMemo(() => new Map(icons.map((icon) => [icon.id, icon])), [icons]);
   const iconIds = useMemo(() => new Set(icons.map((icon) => icon.id)), [icons]);
-  const currencyMap = useMemo(() => new Map(currencies.map((currency) => [currency.id, currency])), [currencies]);
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
@@ -280,7 +255,6 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
 
   const cloneData = useCallback((data: PerkNodeData): PerkNodeData => ({
     name: data.name,
-    cost: { ...data.cost },
     upgrades: data.upgrades.filter((upgrade) => statMap.get(upgrade.statId)?.type !== 'boolean').map((upgrade) => ({ ...upgrade, id: uid('upgrade') })),
     primaryIconId: data.primaryIconId,
     secondaryIconId: data.secondaryIconId,
@@ -321,12 +295,12 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
       id,
       type: 'skill',
       position: findOpenPosition(preferred),
-      data: { name, cost: { currencyId: currencies[0]?.id ?? '', amount: 0 }, upgrades: [], primaryIconId: null, secondaryIconId: null, secondaryColor: null },
+      data: { name, upgrades: [], primaryIconId: null, secondaryIconId: null, secondaryColor: null },
       selected: true,
     };
     setPerks((current) => [...current.map((perk) => ({ ...perk, selected: false })), node]);
     setSelectedId(id);
-  }, [currencies, findOpenPosition, perks, rfInstance, setPerks]);
+  }, [findOpenPosition, perks, rfInstance, setPerks]);
 
   const duplicatePerk = useCallback((id: string) => {
     const source = perks.find((perk) => perk.id === id);
@@ -445,38 +419,29 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
     if (selectedPerk) updatePerk(selectedPerk.id, { upgrades: selectedPerk.data.upgrades.filter((upgrade) => upgrade.id !== upgradeId) });
   };
 
-  const selectedCurrency = selectedPerk ? currencyMap.get(selectedPerk.data.cost.currencyId) : undefined;
-  const selectedCurrencyIcon = selectedCurrency?.iconId ? iconMap.get(selectedCurrency.iconId) ?? null : null;
-  const selectedCurrencyColor = selectedCurrency ? normalizeColor(selectedCurrency.color, '#ffffff') : '#ffffff';
   const selectedFirstStat = selectedPerk?.data.upgrades[0] ? statMap.get(selectedPerk.data.upgrades[0].statId) : undefined;
 
   const visuals = useMemo<ReadonlyMap<string, PerkVisual>>(() => new Map(perks.map((perk) => {
     const firstStat = perk.data.upgrades[0] ? statMap.get(perk.data.upgrades[0].statId) : undefined;
     const primaryId = perk.data.primaryIconId ?? firstStat?.iconId ?? null;
     const secondaryId = perk.data.secondaryIconId ?? firstStat?.groupIconId ?? null;
-    const currency = currencyMap.get(perk.data.cost.currencyId);
     return [perk.id, {
       primaryIcon: primaryId && iconIds.has(primaryId) ? iconMap.get(primaryId) ?? null : null,
       secondaryIcon: secondaryId && iconIds.has(secondaryId) ? iconMap.get(secondaryId) ?? null : null,
       secondaryColor: perk.data.secondaryColor ?? (firstStat ? normalizeColor(firstStat.groupColor, '#ffffff') : '#ffffff'),
-      currencyIcon: currency?.iconId && iconIds.has(currency.iconId) ? iconMap.get(currency.iconId) ?? null : null,
-      currencyColor: currency ? normalizeColor(currency.color, '#ffffff') : '#ffffff',
     }];
-  })), [currencyMap, iconIds, iconMap, perks, statMap]);
+  })), [iconIds, iconMap, perks, statMap]);
 
-  const labels = useMemo(() => buildNodeLabelLayout(perks.map((perk) => {
-    const currency = currencyMap.get(perk.data.cost.currencyId);
-    return {
+  const labels = useMemo(() => buildNodeLabelLayout(perks.map((perk) => ({
       id: perk.id,
       position: perk.position,
       name: perk.data.name,
-      currency: currency ? { amount: perk.data.cost.amount, hasIcon: Boolean(currency.iconId && iconIds.has(currency.iconId)) } : null,
+      currency: null,
       effects: perk.data.upgrades.flatMap((upgrade) => {
         const stat = statMap.get(upgrade.statId);
         return stat ? [{ operator: upgrade.operator, value: upgrade.value, groupName: stat.groupName, statName: stat.name }] : [];
       }),
-    };
-  }), [], { showCurrency, showNames, showStats }), [currencyMap, iconIds, perks, showCurrency, showNames, showStats, statMap]);
+  })), [], { showCurrency: false, showNames, showStats }), [perks, showNames, showStats, statMap]);
 
   const selectedVisual = selectedPerk ? visuals.get(selectedPerk.id) ?? null : null;
   const hasAvailableUpgradeStat = stats.some((stat) => stat.type === 'number' || !booleanStatUsedElsewhere(stat.id));
@@ -489,7 +454,6 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
           <label className="perk-grid-size-control"><span>Grid size</span><input type="number" min={MIN_GRID_SIZE} max={MAX_GRID_SIZE} step="4" value={gridSize} onChange={(event) => changeGridSize(Number(event.target.value))} /><span>px</span></label>
         </div>
         <div className="canvas-display-toolbar" aria-label="Perk display options">
-          <button className={`canvas-icon-toggle${showCurrency ? ' is-active' : ''}`} type="button" aria-label="Toggle perk currency costs" aria-pressed={showCurrency} onClick={() => setShowCurrency((value) => !value)}><ToolbarIcon name="currency" /></button>
           <button className={`canvas-icon-toggle${showNames ? ' is-active' : ''}`} type="button" aria-label="Toggle perk names" aria-pressed={showNames} onClick={() => setShowNames((value) => !value)}><ToolbarIcon name="name" /></button>
           <button className={`canvas-icon-toggle${showStats ? ' is-active' : ''}`} type="button" aria-label="Toggle perk stat effects" aria-pressed={showStats} onClick={() => setShowStats((value) => !value)}><ToolbarIcon name="stats" /></button>
         </div>
@@ -547,30 +511,13 @@ function PerksView({ perks, setPerks, skills, stats, currencies, icons, gridSize
           {selectedPerk && <button className="ghost-icon" onClick={() => setSelectedId(null)} aria-label="Close perk selection"><ToolbarIcon name="close" /></button>}
         </div>
         {!selectedPerk ? (
-          <div className="empty-inspector"><div className="empty-orbit"><span /></div><h3>Select a perk</h3><p>Choose a circle on the grid to edit its identity, cost, appearance, stat effects, and grid cell.</p></div>
+          <div className="empty-inspector"><div className="empty-orbit"><span /></div><h3>Select a perk</h3><p>Choose a circle on the grid to edit its identity, appearance, stat effects, and grid cell.</p></div>
         ) : (
           <div className="inspector-scroll">
             <section className="inspector-section">
               <div className="section-title-row"><h3>Perk</h3><span className="id-chip">{selectedPerk.id}</span></div>
               <label className="field-label">Name<input value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} onBlur={commitName} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>
               <div className="perk-id-note">ID/key is generated from the name: lowercase with spaces replaced by periods.</div>
-              <div className="field-grid cost-grid">
-                <label className="field-label">Currency
-                  <div className={`currency-select-wrap${selectedCurrencyIcon ? ' has-icon' : ''}`}>
-                    {selectedCurrencyIcon && <MaskedSvgIcon icon={selectedCurrencyIcon} color={selectedCurrencyColor} className="inspector-currency-icon" />}
-                    <select value={selectedPerk.data.cost.currencyId} onChange={(event) => updatePerk(selectedPerk.id, { cost: { ...selectedPerk.data.cost, currencyId: event.target.value } })} disabled={currencies.length === 0}>
-                      {currencies.length === 0 && <option value="">No currencies</option>}
-                      {currencies.map((currency) => <option key={currency.id} value={currency.id}>{currency.name}</option>)}
-                    </select>
-                  </div>
-                </label>
-                <label className="field-label">Cost
-                  <div className={`number-wrap currency-number-wrap${selectedCurrencyIcon ? ' has-icon' : ''}`}>
-                    {selectedCurrencyIcon && <MaskedSvgIcon icon={selectedCurrencyIcon} color={selectedCurrencyColor} className="inspector-currency-icon" />}
-                    <input type="number" min="0" value={selectedPerk.data.cost.amount} onChange={(event) => updatePerk(selectedPerk.id, { cost: { ...selectedPerk.data.cost, amount: Number(event.target.value) } })} />
-                  </div>
-                </label>
-              </div>
               <div className="field-grid">
                 <label className="field-label">Grid column<input type="number" step="1" value={Math.round(selectedPerk.position.x / gridSize)} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) setPerks((current) => current.map((perk) => perk.id === selectedPerk.id ? { ...perk, position: { ...perk.position, x: Math.round(value) * gridSize } } : perk)); }} /></label>
                 <label className="field-label">Grid row<input type="number" step="1" value={Math.round(selectedPerk.position.y / gridSize)} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) setPerks((current) => current.map((perk) => perk.id === selectedPerk.id ? { ...perk, position: { ...perk.position, y: Math.round(value) * gridSize } } : perk)); }} /></label>
