@@ -1,0 +1,62 @@
+name: Apply perk cost removal
+run-name: Apply and validate perk cost removal
+
+on:
+  push:
+    branches:
+      - feature/remove-perk-costs
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/remove-perk-costs
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply perk cost removal
+        run: python scripts/remove-perk-costs.py
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Production build
+        run: npm run build
+
+      - name: Smoke test production output
+        shell: bash
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/skill-tree-preview.log 2>&1 &
+          PREVIEW_PID=$!
+          trap 'kill $PREVIEW_PID 2>/dev/null || true' EXIT
+          READY=0
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error http://127.0.0.1:4173/Skill-Tree-Maker/ -o /tmp/skill-tree-index.html; then
+              READY=1
+              break
+            fi
+            sleep 0.5
+          done
+          test "$READY" = "1"
+          test -s /tmp/skill-tree-index.html
+          grep -q '/Skill-Tree-Maker/assets/' /tmp/skill-tree-index.html
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/remove-perk-costs.py .github/workflows/apply-remove-perk-costs.yml
+          git add src/App.tsx src/PerksView.tsx
+          git commit -m "Remove currency costs from perks"
+          git push origin HEAD:feature/remove-perk-costs
