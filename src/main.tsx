@@ -1,5 +1,6 @@
 import './history';
 import './projectRuntime';
+import './localMcpBridge';
 import './statKeySync';
 import './statSearchSelect';
 import { StrictMode } from 'react';
