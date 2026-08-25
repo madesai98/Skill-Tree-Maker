@@ -69,6 +69,15 @@ function persistSavedSettings(next: SavedSettings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
 }
 
+function syncWebMcpTunnelId(tunnelId: string) {
+  try {
+    const current = JSON.parse(localStorage.getItem(LEGACY_WEBMCP_SETTINGS_KEY) ?? '{}') as Record<string, unknown>;
+    localStorage.setItem(LEGACY_WEBMCP_SETTINGS_KEY, JSON.stringify({ ...current, tunnelId }));
+  } catch {
+    localStorage.setItem(LEGACY_WEBMCP_SETTINGS_KEY, JSON.stringify({ tunnelId }));
+  }
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (char) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
@@ -431,7 +440,7 @@ function currentApiKey() {
 async function saveScriptFolder() {
   notice = '';
   const tunnelId = currentTunnelId();
-  const apiKey = currentApiKey();
+  const apiKey = currentApiKey().trim();
   const platform = selectedPlatform();
   if (!/^tunnel_[0-9a-f]{32}$/.test(tunnelId)) {
     notice = 'Enter a valid tunnel ID (tunnel_ followed by 32 lowercase hexadecimal characters).';
@@ -449,6 +458,7 @@ async function saveScriptFolder() {
     return;
   }
   persistSavedSettings({ tunnelId, platform });
+  syncWebMcpTunnelId(tunnelId);
   const generated = generateScript(platform as PlatformId, tunnelId, apiKey);
   const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
   try {
