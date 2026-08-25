@@ -1,5 +1,6 @@
 import './history';
 import './projectRuntime';
+import './webMcpBootstrap';
 import './webMcp';
 import './webMcpEnvironmentSetup';
 import './statKeySync';
