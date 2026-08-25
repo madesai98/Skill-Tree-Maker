@@ -52,14 +52,6 @@ type SearchGroup = {
   originalIndex: number;
 };
 
-type PendingSmartDefault = {
-  nodeId: string;
-  previousCount: number;
-  expiresAt: number;
-};
-
-let pendingSmartDefault: PendingSmartDefault | null = null;
-
 function readProjectMetadata(): ProjectMetadata {
   const stats = new Map<string, UpgradeRecommendationStat>();
   const nodes: UpgradeRecommendationNode[] = [];
@@ -312,32 +304,6 @@ function collectGroups(select: HTMLSelectElement, query: string) {
   return groups;
 }
 
-function maybeApplyPendingSmartDefault(select: HTMLSelectElement) {
-  if (!pendingSmartDefault) return;
-  if (performance.now() > pendingSmartDefault.expiresAt) {
-    pendingSmartDefault = null;
-    return;
-  }
-
-  const inspector = treeInspectorFor(select);
-  if (!inspector) return;
-  const nodeId = selectedTreeNodeId(inspector);
-  if (nodeId !== pendingSmartDefault.nodeId) return;
-
-  const selects = statSelectsInInspector(inspector);
-  const index = selects.indexOf(select);
-  if (selects.length <= pendingSmartDefault.previousCount || index < pendingSmartDefault.previousCount) return;
-
-  const metadata = readProjectMetadata();
-  const groups = buildSearchGroups(select, metadata);
-  const recommendation = recommendationForSelect(select, metadata, groups, true);
-  pendingSmartDefault = null;
-  const nextStatId = recommendation?.recommendedStatId;
-  if (!nextStatId || nextStatId === select.value) return;
-  if (!Array.from(select.options).some((option) => option.value === nextStatId && !option.disabled)) return;
-  nativeSetSelectValue(select, nextStatId);
-}
-
 function enhanceStatSelect(select: HTMLSelectElement) {
   if (select.hasAttribute(ENHANCED_ATTR) || !isStatSelect(select)) return;
   select.setAttribute(ENHANCED_ATTR, 'true');
@@ -492,7 +458,7 @@ function enhanceStatSelect(select: HTMLSelectElement) {
   };
 
   input.addEventListener('pointerdown', () => {
-    selectAllOnPointerClick = document.activeElement !== input || menu.hidden;
+    selectAllOnPointerClick = document.activeElement !== input || menu.hidden !== false;
   });
 
   input.addEventListener('focus', () => {
@@ -564,29 +530,11 @@ function enhanceStatSelect(select: HTMLSelectElement) {
   });
   lifecycleObserver.observe(document.documentElement, { childList: true, subtree: true });
 
-  maybeApplyPendingSmartDefault(select);
   syncDisplay();
 }
 
 function enhanceAllStatSelects(root: ParentNode = document) {
   root.querySelectorAll<HTMLSelectElement>('label.field-label.compact > select').forEach(enhanceStatSelect);
-}
-
-function captureUpgradeAdd(event: MouseEvent) {
-  const target = event.target instanceof Element ? event.target.closest('button.small-button') : null;
-  if (!(target instanceof HTMLButtonElement) || target.disabled) return;
-  const section = target.closest('.inspector-section');
-  const inspector = target.closest('.tree-layout aside.inspector');
-  if (!section || !inspector) return;
-  const title = section.querySelector('.section-title-row h3')?.textContent?.trim();
-  if (title !== 'Upgrade stats') return;
-  const nodeId = selectedTreeNodeId(inspector);
-  if (!nodeId) return;
-  pendingSmartDefault = {
-    nodeId,
-    previousCount: statSelectsInInspector(inspector).length,
-    expiresAt: performance.now() + 1500,
-  };
 }
 
 const observer = new MutationObserver((mutations) => {
@@ -598,8 +546,6 @@ const observer = new MutationObserver((mutations) => {
     });
   });
 });
-
-document.addEventListener('click', captureUpgradeAdd, true);
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => enhanceAllStatSelects(), { once: true });
