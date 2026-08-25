@@ -63,15 +63,30 @@ if (-not $tunnelExe) {
   $tempZip = Join-Path $env:TEMP $assetName
   Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tempZip -UseBasicParsing
 
-  $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
-  if ($sumsAsset) {
-    $sums = (Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing).Content
-    $escaped = [regex]::Escape($assetName)
-    $match = [regex]::Match($sums, "(?mi)^([0-9a-f]{64})\\s+\\*?$escaped\\s*$")
-    if (-not $match.Success) { Fail "Could not find $assetName in SHA256SUMS.txt." }
-    $actual = (Get-FileHash -Algorithm SHA256 -Path $tempZip).Hash.ToLowerInvariant()
-    if ($actual -ne $match.Groups[1].Value.ToLowerInvariant()) { Fail 'The tunnel-client download failed SHA256 verification.' }
+  $expectedHash = $null
+  $assetDigest = [string]$asset.digest
+  if ($assetDigest -match '^sha256:([0-9a-fA-F]{64})$') {
+    $expectedHash = $Matches[1].ToLowerInvariant()
+  } else {
+    $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
+    if ($sumsAsset) {
+      $sumsResponse = Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing
+      $sumsText = [string]$sumsResponse.Content
+      foreach ($line in ($sumsText -split "`r?`n")) {
+        $lineMatch = [regex]::Match($line, '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
+        if (-not $lineMatch.Success) { continue }
+        $candidateName = [IO.Path]::GetFileName($lineMatch.Groups[2].Value.Trim())
+        if ($candidateName -eq $assetName) {
+          $expectedHash = $lineMatch.Groups[1].Value.ToLowerInvariant()
+          break
+        }
+      }
+    }
   }
+  if (-not $expectedHash) { Fail "The GitHub release did not provide a SHA256 digest for $assetName." }
+  $actual = (Get-FileHash -Algorithm SHA256 -Path $tempZip).Hash.ToLowerInvariant()
+  if ($actual -ne $expectedHash) { Fail 'The tunnel-client download failed SHA256 verification.' }
+  Write-Step 'Verified tunnel-client SHA256.'
 
   if (Test-Path $TunnelDir) { Remove-Item -Recurse -Force $TunnelDir }
   New-Item -ItemType Directory -Force -Path $TunnelDir | Out-Null
