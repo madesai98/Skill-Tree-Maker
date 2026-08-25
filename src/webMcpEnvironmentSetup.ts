@@ -9,7 +9,7 @@ const LEGACY_WEBMCP_SETTINGS_KEY = 'skill-tree:webmcp-settings:v2';
 const RELAY_VERSION = '5.0.1';
 const RELAY_INVOKE_TIMEOUT_MS = '125000';
 const BRIDGE_ALIAS = 'skill-tree-maker';
-const GENERATED_DIR_NAME = 'SkillTreeMakerBridge';
+const SUGGESTED_DIR_NAME = 'SkillTreeMakerBridge';
 
 type PlatformId = `${'windows' | 'darwin' | 'linux'}-${'amd64' | 'arm64'}`;
 type PlatformOption = {
@@ -24,17 +24,6 @@ type ReleaseState = {
   error: string | null;
 };
 type SavedSettings = { tunnelId: string; platform: string };
-type DirectoryPickerOptions = { mode?: 'read' | 'readwrite' };
-type WritableLike = { write(data: string | Blob): Promise<void>; close(): Promise<void> };
-type FileHandleLike = { createWritable(): Promise<WritableLike> };
-type DirectoryHandleLike = {
-  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<DirectoryHandleLike>;
-  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileHandleLike>;
-};
-type WindowWithDirectoryPicker = Window & typeof globalThis & {
-  showDirectoryPicker?: (options?: DirectoryPickerOptions) => Promise<DirectoryHandleLike>;
-};
-
 type GitHubRelease = {
   tag_name?: unknown;
   assets?: unknown;
@@ -400,7 +389,7 @@ if [ -z "$NPX" ]; then
   NPX="$(find_npx || true)"
   [ -n "$NPX" ] || fail 'Portable Node.js installed, but npx could not be found.'
   chmod +x "$NPX"
-  step "Installed portable Node.js $node_version."
+  step "Installed portable Node.js $nodeVersion."
 fi
 
 export TUNNEL_RUNTIME_KEY="$RUNTIME_API_KEY"
@@ -437,7 +426,7 @@ function currentApiKey() {
   return document.querySelector<HTMLInputElement>('[data-bridge-api-key]')?.value ?? runtimeApiKey;
 }
 
-async function saveScriptFolder() {
+function downloadScript() {
   notice = '';
   const tunnelId = currentTunnelId();
   const apiKey = currentApiKey().trim();
@@ -447,8 +436,8 @@ async function saveScriptFolder() {
     renderSetup();
     return;
   }
-  if (!apiKey.trim()) {
-    notice = 'Paste the restricted runtime API key. It is used only to generate the local script and is not stored by this page.';
+  if (!apiKey) {
+    notice = 'Paste the restricted runtime API key. It is used only to generate the downloaded script and is not stored by this page.';
     renderSetup();
     return;
   }
@@ -457,32 +446,24 @@ async function saveScriptFolder() {
     renderSetup();
     return;
   }
+
   persistSavedSettings({ tunnelId, platform });
   syncWebMcpTunnelId(tunnelId);
   const generated = generateScript(platform as PlatformId, tunnelId, apiKey);
-  const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
   try {
-    if (picker) {
-      const parent = await picker({ mode: 'readwrite' });
-      const directory = await parent.getDirectoryHandle(GENERATED_DIR_NAME, { create: true });
-      const file = await directory.getFileHandle(generated.filename, { create: true });
-      const writable = await file.createWritable();
-      await writable.write(generated.content);
-      await writable.close();
-      notice = `Created ${GENERATED_DIR_NAME}/${generated.filename}. Run that one file whenever you want to start or refresh the bridge.`;
-    } else {
-      const blob = new Blob([generated.content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = generated.filename;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      notice = `Downloaded ${generated.filename}. Put it in its own ${GENERATED_DIR_NAME} folder before running it; the script populates that folder with its tools.`;
-    }
+    const blob = new Blob([generated.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = generated.filename;
+    anchor.style.display = 'none';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    notice = `Downloaded ${generated.filename}. Put it in a private folder of your choice before running it; the script will create its tools directory beside itself.`;
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') return;
-    notice = error instanceof Error ? error.message : 'Could not save the launch script.';
+    notice = error instanceof Error ? error.message : 'Could not download the launch script.';
   }
   renderSetup();
 }
@@ -506,7 +487,7 @@ function setupMarkup() {
     ? 'Start-SkillTreeMaker-Bridge.cmd'
     : saved.platform ? 'start-skill-tree-maker-bridge.sh' : 'Choose a platform to see the launcher filename';
   return `
-    <div class="webmcp-section-title"><strong>2. Create your one-file bridge launcher</strong><small>Provide the two OpenAI values, choose a release platform, and generate a ${scriptKind} launcher. The API key is never written to browser storage.</small></div>
+    <div class="webmcp-section-title"><strong>2. Create your one-file bridge launcher</strong><small>Provide the two OpenAI values, choose a release platform, and download a ${scriptKind} launcher. The API key is used only to build the file and is never written to browser storage.</small></div>
     <div class="bridge-setup-grid">
       <label class="webmcp-field"><span>Tunnel ID</span><input type="text" data-bridge-tunnel-id spellcheck="false" autocomplete="off" placeholder="tunnel_0123456789abcdef0123456789abcdef" value="${escapeHtml(saved.tunnelId)}"></label>
       <label class="webmcp-field"><span>Runtime API key</span><input type="password" data-bridge-api-key spellcheck="false" autocomplete="new-password" placeholder="Paste restricted Tunnels Read + Use key" value="${escapeHtml(runtimeApiKey)}"></label>
@@ -528,8 +509,8 @@ function setupMarkup() {
         <li>Uses your existing <code>npx</code>, or automatically downloads a portable current Node.js LTS copy into the same folder if Node is not installed.</li>
         <li>Starts <code>@mcp-b/webmcp-local-relay@${RELAY_VERSION}</code> through <code>tunnel-client runtimes connect</code>, then automatically runs <code>runtimes status ${BRIDGE_ALIAS} --json</code>.</li>
       </ol>
-      <button type="button" class="bridge-primary-action" data-bridge-action="save-script" ${releaseState.status === 'ready' ? '' : 'disabled'}>Create ${GENERATED_DIR_NAME} launch folder</button>
-      <small class="webmcp-note">On supported Chromium browsers this asks you for a parent folder, creates <code>${GENERATED_DIR_NAME}</code>, and writes the launcher inside it. The launcher contains your API key in plain text as requested, so keep that folder private and never share the script.${saved.platform.startsWith('darwin-') || saved.platform.startsWith('linux-') ? ' The first time, run it with <code>bash ./start-skill-tree-maker-bridge.sh</code>; it marks itself executable so later runs can use <code>./start-skill-tree-maker-bridge.sh</code>.' : ''}</small>
+      <button type="button" class="bridge-primary-action" data-bridge-action="download-script" ${releaseState.status === 'ready' ? '' : 'disabled'}>Download launcher script</button>
+      <small class="webmcp-note">The browser downloads only <code>${escapeHtml(launcherName)}</code>; it does not create or write any folder. Put the file in a private folder of your choice (for example <code>${SUGGESTED_DIR_NAME}</code>) before running it. The launcher contains your API key in plain text as requested, so never share it.${saved.platform.startsWith('darwin-') || saved.platform.startsWith('linux-') ? ' The first time, run it with <code>bash ./start-skill-tree-maker-bridge.sh</code>; it marks itself executable so later runs can use <code>./start-skill-tree-maker-bridge.sh</code>.' : ''}</small>
     </div>
     ${notice ? `<div class="bridge-setup-notice">${escapeHtml(notice)}</div>` : ''}
     <div class="webmcp-actions"><a href="${CHATGPT_CONNECTORS_URL}" target="_blank" rel="noreferrer">Open ChatGPT Connectors</a></div>`;
@@ -544,17 +525,23 @@ function findLegacySection(panel: HTMLElement) {
 function ensureSetupSection() {
   const panel = document.querySelector<HTMLElement>('.webmcp-panel');
   if (!panel) return;
-  const legacy = findLegacySection(panel);
-  if (!legacy) return;
-  legacy.hidden = true;
+
   let section = panel.querySelector<HTMLElement>(':scope > .bridge-launch-section');
-  if (!section) {
-    section = document.createElement('div');
-    section.className = 'webmcp-section bridge-launch-section';
-    legacy.before(section);
-    section.innerHTML = setupMarkup();
-    void refreshPlatforms();
+  const legacy = findLegacySection(panel);
+  if (legacy) {
+    if (!section) {
+      section = document.createElement('div');
+      section.className = 'webmcp-section bridge-launch-section';
+      section.innerHTML = setupMarkup();
+      legacy.replaceWith(section);
+      void refreshPlatforms();
+    } else {
+      legacy.remove();
+    }
+    return;
   }
+
+  if (section && !section.innerHTML) section.innerHTML = setupMarkup();
 }
 
 function renderSetup() {
@@ -586,7 +573,7 @@ function installHandlers() {
     if (!(target instanceof Element)) return;
     const action = target.closest<HTMLElement>('[data-bridge-action]')?.dataset.bridgeAction;
     if (action === 'refresh-platforms') void refreshPlatforms(true);
-    if (action === 'save-script') void saveScriptFolder();
+    if (action === 'download-script') downloadScript();
   });
 }
 
