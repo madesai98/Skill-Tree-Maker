@@ -1,0 +1,184 @@
+name: Temporary local MCP reconnect validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  browser-reconnect:
+    if: github.event.pull_request.head.ref == 'fix/robust-local-mcp-connection'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install app and browser test dependencies
+        run: |
+          npm install
+          npm install --no-save playwright ws
+          npx playwright install --with-deps chromium
+
+      - name: Build and start production preview
+        run: |
+          npm run build
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/stm-preview.log 2>&1 &
+          echo $! > /tmp/stm-preview.pid
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173/Skill-Tree-Maker/ >/dev/null; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/stm-preview.log
+          exit 1
+
+      - name: Verify quiet waiting and automatic reconnection
+        shell: bash
+        run: |
+          cat > /tmp/validate-local-mcp.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import { WebSocketServer } from 'ws';
+
+          const pageUrl = 'http://127.0.0.1:4173/Skill-Tree-Maker/';
+          const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
+          let latestToolCount = 0;
+
+          function startRelay() {
+            return new Promise((resolve, reject) => {
+              const wss = new WebSocketServer({
+                host: '127.0.0.1',
+                port: 9333,
+                handleProtocols(protocols) {
+                  if (protocols.has('webmcp.v1')) return 'webmcp.v1';
+                  if (protocols.has('webmcp-discovery.v1')) return 'webmcp-discovery.v1';
+                  return false;
+                },
+              });
+              wss.once('error', reject);
+              wss.once('listening', () => resolve(wss));
+              wss.on('connection', (socket) => {
+                socket.send(JSON.stringify({
+                  type: 'server-hello',
+                  service: 'webmcp-local-relay',
+                  version: 1,
+                  host: '127.0.0.1',
+                  instanceId: 'ci-relay',
+                  port: 9333,
+                }));
+                socket.on('message', (raw) => {
+                  let message;
+                  try { message = JSON.parse(raw.toString()); } catch { return; }
+                  if (message.type === 'hello') {
+                    socket.send(JSON.stringify({ type: 'hello/accepted' }));
+                  } else if (message.type === 'tools/list' || message.type === 'tools/changed') {
+                    latestToolCount = Array.isArray(message.tools) ? message.tools.length : 0;
+                  } else if (message.type === 'pong') {
+                    // Heartbeat response accepted.
+                  }
+                });
+              });
+            });
+          }
+
+          async function stopRelay(wss) {
+            for (const client of wss.clients) {
+              try { client.close(1012, 'CI relay restart'); } catch {}
+            }
+            await new Promise((resolve) => wss.close(() => resolve()));
+          }
+
+          async function waitForConnected(page, timeout = 12000) {
+            await page.waitForFunction(() =>
+              document.querySelector('.webmcp-button-status')?.textContent?.trim() === 'Connected',
+              undefined,
+              { timeout },
+            );
+          }
+
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          const consoleMessages = [];
+          const requestUrls = [];
+          page.on('console', (message) => {
+            if (message.type() === 'warning' || message.type() === 'error') {
+              consoleMessages.push(message.text());
+            }
+          });
+          page.on('request', (request) => requestUrls.push(request.url()));
+          await page.addInitScript(({ tunnelId }) => {
+            localStorage.setItem('skill-tree:webmcp-settings:v2', JSON.stringify({
+              tunnelId,
+              relayEnabled: true,
+            }));
+          }, { tunnelId });
+
+          // Page first: no relay exists yet. It should wait with bounded retries.
+          await page.goto(pageUrl, { waitUntil: 'networkidle' });
+          await page.waitForSelector('.webmcp-button');
+          await page.waitForTimeout(6500);
+          const websocketNoise = consoleMessages.filter((message) =>
+            /WebSocket.*(failed|closed|error)/i.test(message),
+          );
+          if (websocketNoise.length > 4) {
+            throw new Error(`Expected bounded localhost retries, saw ${websocketNoise.length} WebSocket console messages: ${websocketNoise.join(' | ')}`);
+          }
+          if (requestUrls.some((url) => url.includes('cdn.jsdelivr.net/npm/@mcp-b/webmcp-local-relay'))) {
+            throw new Error('The legacy CDN relay adapter was requested; direct bundled relay ownership failed.');
+          }
+          if (consoleMessages.some((message) => message.includes('navigator.modelContext is deprecated'))) {
+            throw new Error('The deprecated navigator.modelContext warning is still emitted.');
+          }
+
+          let relay = await startRelay();
+          await waitForConnected(page);
+          await page.waitForFunction(() =>
+            document.querySelector('.webmcp-local-summary')?.textContent?.includes('Local computer connection is ready'),
+            undefined,
+            { timeout: 5000 },
+          );
+          await page.waitForTimeout(500);
+          if (latestToolCount < 15) {
+            throw new Error(`Expected at least 15 relayed tools after connection, got ${latestToolCount}.`);
+          }
+
+          // Lose the local relay, then bring it back. The page must recover without reload.
+          await stopRelay(relay);
+          await page.waitForFunction(() =>
+            document.querySelector('.webmcp-button-status')?.textContent?.trim() !== 'Connected',
+            undefined,
+            { timeout: 5000 },
+          );
+          await page.waitForTimeout(1200);
+          relay = await startRelay();
+          await waitForConnected(page);
+
+          // Server first / page refresh: persisted opt-in must reconnect automatically.
+          latestToolCount = 0;
+          await page.reload({ waitUntil: 'networkidle' });
+          await waitForConnected(page, 7000);
+          await page.waitForTimeout(500);
+          if (latestToolCount < 15) {
+            throw new Error(`Expected tool re-registration after refresh, got ${latestToolCount}.`);
+          }
+
+          const rows = await page.locator('.webmcp-status-row').allTextContents();
+          if (!rows[3]?.includes('Connected')) {
+            throw new Error(`Local status row did not report Connected: ${JSON.stringify(rows)}`);
+          }
+
+          await stopRelay(relay);
+          await browser.close();
+          console.log('Local MCP launch-order, reconnect, refresh, tool-sync, and console-noise checks passed.');
+          JS
+          NODE_PATH="$PWD/node_modules" node /tmp/validate-local-mcp.mjs
+
+      - name: Stop preview
+        if: always()
+        run: |
+          kill "$(cat /tmp/stm-preview.pid 2>/dev/null)" 2>/dev/null || true
