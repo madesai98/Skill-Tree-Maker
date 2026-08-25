@@ -1,6 +1,7 @@
 import './history';
 import './projectRuntime';
 import './webMcp';
+import './webMcpEnvironmentSetup';
 import './statKeySync';
 import './statSearchSelect';
 import { StrictMode } from 'react';
