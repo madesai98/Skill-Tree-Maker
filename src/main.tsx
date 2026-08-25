@@ -2,6 +2,7 @@ import './history';
 import './projectRuntime';
 import './webMcpBootstrap';
 import './webMcp';
+import './webMcpProjectTools';
 import './webMcpLocalConnection';
 import './webMcpWindowsLauncherFix';
 import './webMcpEnvironmentSetup';
