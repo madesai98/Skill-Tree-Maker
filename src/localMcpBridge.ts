@@ -12,6 +12,7 @@ const PROJECT_SETTINGS_KEY = 'skill-tree:project-settings:v1';
 const TUNNELS_URL = 'https://platform.openai.com/settings/organization/tunnels';
 const API_KEYS_URL = 'https://platform.openai.com/settings/organization/api-keys';
 const TUNNEL_CLIENT_URL = 'https://github.com/openai/tunnel-client/releases/latest';
+const LOCAL_MCP_URL = 'http://127.0.0.1:47831/mcp';
 
 type ConnectionState = 'connected' | 'disconnected' | 'missing' | 'unknown';
 type Settings = { tunnelId: string };
@@ -83,7 +84,12 @@ function runtimeContext() {
     projectId,
     activeView,
     origin: window.location.origin,
-    capabilities: { readProject: true, applyProject: true, localAndOnlineModes: true },
+    capabilities: {
+      readProject: true,
+      applyProject: true,
+      optimisticApplyGuard: true,
+      localAndOnlineModes: true,
+    },
   };
 }
 
@@ -91,17 +97,23 @@ function currentProject() {
   return getHistoryProject() ?? readWorkingProject();
 }
 
-function applyProject(raw: unknown) {
+function applyProject(raw: unknown, rawBase: unknown) {
   const project = normalizeProject(raw);
+  const baseProject = normalizeProject(rawBase);
   if (!project) throw new Error('The companion supplied an invalid Skill Tree Maker project.');
+  if (!baseProject) throw new Error('The companion must include the project state it based the edit on.');
+
   const graphIssue = validateProjectGraph(project);
   if (graphIssue) throw new Error(graphIssue);
 
   const before = currentProject();
+  if (!sameValue(before, baseProject)) {
+    throw new Error('The project changed after the companion read it. Re-read the project and retry the edit.');
+  }
   if (sameValue(before, project)) return { changed: false, changeCount: 0 };
+
   const changes = diffProjects(before, project);
   if (!changes.length) return { changed: false, changeCount: 0 };
-
   const detail: HistoryApplyDetail = { transitions: [{ direction: 'redo', changes }] };
   window.dispatchEvent(new CustomEvent<HistoryApplyDetail>(HISTORY_APPLY_EVENT, { detail }));
   return { changed: true, changeCount: changes.length };
@@ -154,8 +166,8 @@ window.addEventListener('message', (event) => {
     } else if (message.action === 'get_project') {
       respond(message.requestId, true, currentProject());
     } else if (message.action === 'apply_project') {
-      const payload = message.payload as { project?: unknown } | undefined;
-      respond(message.requestId, true, applyProject(payload?.project));
+      const payload = message.payload as { project?: unknown; baseProject?: unknown } | undefined;
+      respond(message.requestId, true, applyProject(payload?.project, payload?.baseProject));
     }
   } catch (error) {
     respond(message.requestId, false, undefined, error instanceof Error ? error.message : 'Bridge request failed.');
@@ -188,7 +200,8 @@ function statusRow(label: string, state: ConnectionState, detail: string) {
 }
 
 function tunnelCommand() {
-  return `tunnel-client init --sample sample_mcp_stdio_local --profile skill-tree-maker --tunnel-id ${settings.tunnelId || '<YOUR_TUNNEL_ID>'} --mcp-command "<PATH_TO_SKILL_TREE_MAKER_MCP_SERVER>"`;
+  const tunnelId = settings.tunnelId || '<YOUR_TUNNEL_ID>';
+  return `tunnel-client runtimes connect --alias skill-tree-maker --tunnel-id ${tunnelId} --runtime-api-key env:CONTROL_PLANE_API_KEY --mcp-server-url ${LOCAL_MCP_URL}`;
 }
 
 async function copyText(value: string) {
@@ -210,7 +223,7 @@ function renderPanel(panel: HTMLElement) {
   const extensionDetail = companionStatus.lastSeenAt
     ? `Last response ${new Date(companionStatus.lastSeenAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     : 'Relays commands between this tab and the local bridge.';
-  const localDetail = companionStatus.localServerUrl ?? 'Expected local Skill Tree Maker MCP companion.';
+  const localDetail = companionStatus.localServerUrl ?? `Expected at ${LOCAL_MCP_URL}`;
   const tunnelDetail = companionStatus.tunnelId ?? (settings.tunnelId || 'Enter your tunnel ID below.');
   panel.hidden = !panelOpen;
   panel.innerHTML = `
@@ -230,14 +243,14 @@ function renderPanel(panel: HTMLElement) {
     <div class="mcp-setup-section">
       <div class="mcp-setup-section-title"><strong>2. Install the local pieces</strong><small>A web page cannot reliably install or launch native software, so the remaining steps happen on your computer.</small></div>
       <ol class="mcp-setup-steps">
-        <li>Install the Skill Tree Maker extension relay and local MCP companion when available. The relay is limited to the Skill Tree Maker site.</li>
-        <li>Download OpenAI <code>tunnel-client</code> and create a runtime API key with Tunnels Read + Use permissions.</li>
-        <li>Point the tunnel at the local Skill Tree Maker MCP server and keep the runtime running while ChatGPT is connected.</li>
+        <li>Install the Skill Tree Maker extension relay and local MCP companion when available. The extension connects only this Skill Tree Maker site to the loopback companion.</li>
+        <li>Download OpenAI <code>tunnel-client</code> and create a runtime API key with Tunnels Read + Use permissions. Keep that key outside the browser.</li>
+        <li>Set <code>CONTROL_PLANE_API_KEY</code> on your computer, then point your tunnel at <code>${LOCAL_MCP_URL}</code> with the command below.</li>
         <li>In ChatGPT Settings → Connectors, choose a Tunnel connection and select the same tunnel.</li>
       </ol>
       <div class="mcp-setup-links"><a href="${TUNNEL_CLIENT_URL}" target="_blank" rel="noreferrer">Download tunnel-client</a><a href="${API_KEYS_URL}" target="_blank" rel="noreferrer">Runtime API keys</a></div>
       <div class="mcp-setup-command"><code>${escapeHtml(tunnelCommand())}</code><button type="button" data-mcp-action="copy-command">Copy</button></div>
-      <small class="mcp-setup-note">The companion executable is the next implementation step. The page-side handshake, project read channel, validated project-apply channel, tunnel setting, and connection-status protocol are already active.</small>
+      <small class="mcp-setup-note">The companion executable and extension are the next implementation step. The page-side handshake, project read channel, conflict-guarded project-apply channel, tunnel setting, and connection-status protocol are already active.</small>
     </div>
     <div class="mcp-setup-footer"><button type="button" data-mcp-action="check">Check connection</button><span>${companionStatus.extension === 'connected' ? 'Companion relay detected.' : 'Waiting for companion relay.'}</span></div>`;
 }
