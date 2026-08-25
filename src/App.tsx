@@ -36,6 +36,7 @@ import { buildNodeLabelLayout, type NodeLabelView } from './nodeLabelLayout';
 import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeSvgMarkup, svgDataUrl, type IconAsset } from './iconPool';
 import { canLockPlaytestNode, canUnlockPlaytestNode, simulateStatValues } from './playtest';
 import PerksView from './PerksView';
+import { recommendUpgradeStat } from './statUpgradeRecommendation';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
@@ -1401,7 +1402,19 @@ function SkillTreeEditor() {
 
   const addUpgrade = () => {
     if (!selectedNode || stats.length === 0) return;
-    const stat = stats.find((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id));
+    const eligibleStatIds = new Set(stats
+      .filter((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id))
+      .map((item) => item.id));
+    const recommendation = recommendUpgradeStat({
+      nodeId: selectedNode.id,
+      nodeName: selectedNode.data.name,
+      currentStatIds: selectedNode.data.upgrades.map((upgrade) => upgrade.statId),
+      stats,
+      nodes,
+      edges,
+      eligibleStatIds,
+    });
+    const stat = stats.find((item) => item.id === recommendation.recommendedStatId);
     if (!stat) {
       showNotice('Every toggle stat is already assigned to a skill.');
       return;
