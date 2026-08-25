@@ -51,7 +51,11 @@ type CurrencyRow = JsonRecord & {
   symbol?: string;
 };
 type IconRow = JsonRecord & { id: string; name: string; svg: string };
-type ProjectModel = CanonicalProject & { stats: StatRow[]; currencies: CurrencyRow[]; icons: IconRow[] };
+type ProjectModel = Omit<CanonicalProject, 'stats' | 'currencies' | 'icons'> & {
+  stats: StatRow[];
+  currencies: CurrencyRow[];
+  icons: IconRow[];
+};
 
 const registeredContexts = new WeakMap<ModelContextLike, Set<string>>();
 
@@ -505,7 +509,7 @@ const tools: ToolDefinition[] = [
       const replacement = project.currencies[0]?.id ?? '';
       project.nodes.forEach((node) => {
         const data = dataOf(node); const cost = isRecord(data.cost) ? data.cost : null;
-        if (cost?.currencyId === currency.id) cost.currencyId = replacement;
+        if (cost && cost.currencyId === currency.id) cost.currencyId = replacement;
         node.data = data;
       });
       return { deletedCurrencyId: currency.id, replacementCurrencyId: replacement || null };
