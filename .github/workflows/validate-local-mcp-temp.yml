@@ -41,7 +41,7 @@ jobs:
       - name: Verify quiet waiting and automatic reconnection
         shell: bash
         run: |
-          cat > /tmp/validate-local-mcp.mjs <<'JS'
+          cat > ./validate-local-mcp-temp.mjs <<'JS'
           import { chromium } from 'playwright';
           import { WebSocketServer } from 'ws';
 
@@ -176,7 +176,7 @@ jobs:
           await browser.close();
           console.log('Local MCP launch-order, reconnect, refresh, tool-sync, and console-noise checks passed.');
           JS
-          NODE_PATH="$PWD/node_modules" node /tmp/validate-local-mcp.mjs
+          node ./validate-local-mcp-temp.mjs
 
       - name: Stop preview
         if: always()
