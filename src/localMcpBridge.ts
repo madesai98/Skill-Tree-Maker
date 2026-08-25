@@ -9,7 +9,6 @@ import {
   normalizeProject,
   sameValue,
   validateProjectGraph,
-  type CanonicalProject,
 } from './projectData';
 import './localMcpBridge.css';
 
@@ -235,6 +234,7 @@ window.addEventListener('message', (event) => {
 });
 
 function probeCompanion() {
+  const probeStartedAt = Date.now();
   companionStatus = {
     ...companionStatus,
     extension: 'unknown',
@@ -246,7 +246,7 @@ function probeCompanion() {
   if (probeTimer !== null) window.clearTimeout(probeTimer);
   probeTimer = window.setTimeout(() => {
     probeTimer = null;
-    if (companionStatus.lastSeenAt && Date.now() - companionStatus.lastSeenAt < 3000) return;
+    if (companionStatus.lastSeenAt && companionStatus.lastSeenAt >= probeStartedAt) return;
     companionStatus = {
       extension: 'missing',
       localServer: 'unknown',
@@ -292,7 +292,7 @@ function renderPanel(panel: HTMLElement) {
     ? `Last response ${new Date(companionStatus.lastSeenAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     : 'Relays commands between this tab and the local bridge.';
   const localDetail = companionStatus.localServerUrl ?? 'Expected local Skill Tree Maker MCP companion.';
-  const tunnelDetail = companionStatus.tunnelId ?? settings.tunnelId || 'Enter your tunnel ID below.';
+  const tunnelDetail = companionStatus.tunnelId ?? (settings.tunnelId || 'Enter your tunnel ID below.');
 
   panel.hidden = !panelOpen;
   panel.innerHTML = `
