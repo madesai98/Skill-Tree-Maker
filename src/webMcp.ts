@@ -886,7 +886,7 @@ async function initializeMcpBRuntime() {
       autoInitialize: true,
       transport: { tabServer: false, iframeServer: false },
       nativeModelContextBehavior: 'preserve',
-      installTestingShim: 'if-missing',
+      installTestingShim: true,
     };
     await import('@mcp-b/global');
     registration.runtimeLoading = false;

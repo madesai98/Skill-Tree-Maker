@@ -212,7 +212,7 @@ async function readRelayTools() {
   const context = getModelContext();
   if (!context?.getTools) return { tools: [] as RegisteredTool[], descriptors: [] as RelayDescriptor[] };
   try {
-    const tools = await context.getTools();
+    const tools = await context.getTools() as RegisteredTool[];
     const descriptors = tools
       .map(descriptorFromTool)
       .filter((tool): tool is RelayDescriptor => tool !== null);
@@ -276,7 +276,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 async function invokeTool(name: string, args: JsonObject) {
   const context = getModelContext();
   if (!context?.getTools) throw new Error('WebMCP runtime is not ready in this tab.');
-  const tools = await context.getTools();
+  const tools = await context.getTools() as RegisteredTool[];
   const tool = tools.find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`Tool not found: ${name}`);
 

@@ -1,5 +1,6 @@
 const RELEASE_API = 'https://api.github.com/repos/openai/tunnel-client/releases/latest';
 const RELAY_VERSION = '5.0.1';
+const RELAY_PORT = '9333';
 const RELAY_INVOKE_TIMEOUT_MS = '125000';
 const BRIDGE_ALIAS = 'skill-tree-maker';
 
@@ -18,6 +19,7 @@ $Platform = ${psSingleQuote(platform)}
 $WidgetOrigin = ${psSingleQuote(origin)}
 $RelayVersion = ${psSingleQuote(RELAY_VERSION)}
 $RelayInvokeTimeout = ${psSingleQuote(RELAY_INVOKE_TIMEOUT_MS)}
+$RelayPort = ${psSingleQuote(RELAY_PORT)}
 $Alias = ${psSingleQuote(BRIDGE_ALIAS)}
 $ReleaseApi = ${psSingleQuote(RELEASE_API)}
 $Root = Split-Path -Parent $env:STM_SCRIPT_PATH
@@ -149,7 +151,7 @@ $env:TUNNEL_RUNTIME_KEY = $RuntimeApiKey
 # tunnel-client parses the MCP command after it has been written to the managed
 # profile. Keep that command free of quoted Windows paths: cmd.exe is resolvable
 # from PATH and npx.cmd is resolvable from the Node.js directory prepended above.
-$relayCommand = 'cmd.exe /d /s /c npx.cmd -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+$relayCommand = 'cmd.exe /d /s /c npx.cmd -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --port ' + $RelayPort + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
 $mcpCommandArg = '--mcp-command=' + $relayCommand
 
 # Always stop the previous managed process before reconnecting so changes to the
@@ -181,7 +183,7 @@ if ($statusOutput) { Write-Host $statusOutput }
 if ($statusExit -ne 0) { Fail "tunnel-client runtimes status failed with exit code $statusExit." }
 
 Write-Host ''
-Write-Host 'Bridge startup completed. Keep the Skill Tree Maker browser tab open and enable the same tunnel in ChatGPT.' -ForegroundColor Green
+Write-Host 'Local bridge runtime is healthy. It can start before or after the Skill Tree Maker page; the page reconnects automatically when the relay is available.' -ForegroundColor Green
 `;
 }
 
