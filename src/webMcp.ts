@@ -11,45 +11,70 @@ import {
 } from './projectData';
 import './webMcp.css';
 
-const SETTINGS_KEY = 'skill-tree:webmcp-settings:v1';
+const SETTINGS_KEY = 'skill-tree:webmcp-settings:v2';
+const PREVIOUS_SETTINGS_KEY = 'skill-tree:webmcp-settings:v1';
 const LEGACY_SETTINGS_KEY = 'skill-tree:local-mcp-settings:v1';
 const PROJECT_SETTINGS_KEY = 'skill-tree:project-settings:v1';
 const TUNNELS_URL = 'https://platform.openai.com/settings/organization/tunnels';
 const API_KEYS_URL = 'https://platform.openai.com/settings/organization/api-keys';
 const TUNNEL_CLIENT_URL = 'https://github.com/openai/tunnel-client/releases/latest';
-const CHROME_MCP_URL = 'https://github.com/ChromeDevTools/chrome-devtools-mcp';
-const WEBMCP_DOCS_URL = 'https://developer.chrome.com/docs/ai/webmcp/';
+const CHATGPT_CONNECTORS_URL = 'https://chatgpt.com/#settings/Connectors';
+const MCP_B_RELAY_DOCS_URL = 'https://docs.mcp-b.ai/packages/webmcp-local-relay/reference';
+const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download';
 const TOOL_PREFIX = 'skill_tree_';
+const RELAY_VERSION = '5.0.1';
+const RELAY_PORT = '9333';
+const RELAY_REQUEST_TIMEOUT_MS = '120000';
+const RELAY_INVOKE_TIMEOUT_MS = '125000';
+const RELAY_EMBED_ID = 'skill-tree-webmcp-relay-embed';
+const RELAY_EMBED_URL = `https://cdn.jsdelivr.net/npm/@mcp-b/webmcp-local-relay@${RELAY_VERSION}/dist/browser/embed.js`;
 
-type Settings = { tunnelId: string };
-type ToolAnnotations = { readOnlyHint?: boolean; untrustedContentHint?: boolean };
+type Settings = { tunnelId: string; relayEnabled: boolean };
+type ToolAnnotations = {
+  readOnlyHint: boolean;
+  openWorldHint: boolean;
+  destructiveHint: boolean;
+};
+type ToolResponse = { content: Array<{ type: 'text'; text: string }> };
 type ToolDefinition = {
   name: string;
   title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  annotations?: ToolAnnotations;
-  execute: (input: Record<string, unknown>) => unknown | Promise<unknown>;
+  annotations: ToolAnnotations;
+  execute: (input: Record<string, unknown>) => ToolResponse | Promise<ToolResponse>;
 };
 type ModelContextLike = {
   registerTool: (tool: ToolDefinition, options?: { signal?: AbortSignal }) => void | Promise<void>;
   getTools?: () => Promise<Array<{ name?: string }>>;
 };
 type WebMcpDocument = Document & { modelContext?: ModelContextLike };
-
+type McpBWindow = Window & typeof globalThis & {
+  __webModelContextOptions?: {
+    autoInitialize?: boolean;
+    transport?: { tabServer?: false; iframeServer?: false };
+    nativeModelContextBehavior?: 'preserve' | 'patch';
+    installTestingShim?: boolean | 'always' | 'if-missing';
+  };
+};
 type RegistrationState = {
+  runtimeLoading: boolean;
   available: boolean;
   registering: boolean;
   registered: boolean;
   toolNames: string[];
   error: string | null;
 };
+type RelayEmbedState = 'disabled' | 'loading' | 'loaded' | 'error';
 
 let panelOpen = false;
 let uiInstalled = false;
 let settings = readSettings();
+let relayEmbedState: RelayEmbedState = 'disabled';
+let relayEmbedError: string | null = null;
 let registration: RegistrationState = {
-  available: Boolean((document as WebMcpDocument).modelContext),
+  runtimeLoading: true,
+  available: false,
   registering: false,
   registered: false,
   toolNames: [],
@@ -57,20 +82,36 @@ let registration: RegistrationState = {
 };
 
 function readSettings(): Settings {
-  for (const key of [SETTINGS_KEY, LEGACY_SETTINGS_KEY]) {
+  for (const key of [SETTINGS_KEY, PREVIOUS_SETTINGS_KEY, LEGACY_SETTINGS_KEY]) {
     try {
       const value = JSON.parse(localStorage.getItem(key) ?? '') as Partial<Settings>;
-      if (typeof value.tunnelId === 'string') return { tunnelId: value.tunnelId.trim() };
+      const tunnelId = typeof value.tunnelId === 'string' ? value.tunnelId.trim() : '';
+      if (!tunnelId && typeof value.relayEnabled !== 'boolean') continue;
+      return {
+        tunnelId,
+        relayEnabled: typeof value.relayEnabled === 'boolean' ? value.relayEnabled : Boolean(tunnelId),
+      };
     } catch {
       // Try the next settings source.
     }
   }
-  return { tunnelId: '' };
+  return { tunnelId: '', relayEnabled: false };
+}
+
+function persistSettings(next: Settings) {
+  settings = next;
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
 function saveTunnelId(value: string) {
-  settings = { tunnelId: value.trim() };
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const tunnelId = value.trim();
+  persistSettings({ tunnelId, relayEnabled: settings.relayEnabled || Boolean(tunnelId) });
+  if (settings.relayEnabled) void ensureRelayEmbed();
+}
+
+function enableRelay() {
+  if (!settings.relayEnabled) persistSettings({ ...settings, relayEnabled: true });
+  void ensureRelayEmbed();
 }
 
 function escapeHtml(value: string) {
@@ -105,13 +146,16 @@ function runtimeContext() {
     projectId,
     activeView,
     origin: window.location.origin,
-    webMcpAvailable: registration.available,
+    mcpBRuntimeReady: registration.available,
+    relayAdapterEnabled: settings.relayEnabled,
+    relayAdapterState: relayEmbedState,
     registeredTools: registration.toolNames,
   };
 }
 
-function jsonResult(value: unknown) {
-  return JSON.stringify(value, null, 2);
+function toolResult(value: unknown): ToolResponse {
+  const text = JSON.stringify(value, null, 2) ?? String(value);
+  return { content: [{ type: 'text', text }] };
 }
 
 function positionOf(entity: JsonRecord) {
@@ -214,18 +258,19 @@ function skillSummary(project: CanonicalProject, node: JsonRecord) {
 }
 
 function toolDefinitions(): ToolDefinition[] {
-  const readOnly: ToolAnnotations = { readOnlyHint: true, untrustedContentHint: false };
-  const write: ToolAnnotations = { readOnlyHint: false, untrustedContentHint: false };
+  const readOnly: ToolAnnotations = { readOnlyHint: true, openWorldHint: false, destructiveHint: false };
+  const write: ToolAnnotations = { readOnlyHint: false, openWorldHint: false, destructiveHint: false };
+  const destructive: ToolAnnotations = { readOnlyHint: false, openWorldHint: false, destructiveHint: true };
   const emptySchema = { type: 'object', properties: {}, additionalProperties: false };
 
   return [
     {
       name: `${TOOL_PREFIX}get_context`,
       title: 'Get Skill Tree Maker context',
-      description: 'Return the active Skill Tree Maker project mode, project ID, editor view, origin, and registered WebMCP tools.',
+      description: 'Return the active project mode, project ID, editor view, origin, MCP-B relay state, and registered Skill Tree Maker tools.',
       inputSchema: emptySchema,
       annotations: readOnly,
-      execute: () => jsonResult(runtimeContext()),
+      execute: () => toolResult(runtimeContext()),
     },
     {
       name: `${TOOL_PREFIX}get_project`,
@@ -233,7 +278,7 @@ function toolDefinitions(): ToolDefinition[] {
       description: 'Return the complete currently open Skill Tree Maker project. This is the canonical live browser state for either Local or Online mode.',
       inputSchema: emptySchema,
       annotations: readOnly,
-      execute: () => jsonResult(currentProject()),
+      execute: () => toolResult(currentProject()),
     },
     {
       name: `${TOOL_PREFIX}list_skills`,
@@ -243,7 +288,7 @@ function toolDefinitions(): ToolDefinition[] {
       annotations: readOnly,
       execute: () => {
         const project = currentProject();
-        return jsonResult(project.nodes.map((node) => skillSummary(project, node)));
+        return toolResult(project.nodes.map((node) => skillSummary(project, node)));
       },
     },
     {
@@ -260,7 +305,7 @@ function toolDefinitions(): ToolDefinition[] {
       execute: (input) => {
         const project = currentProject();
         const node = resolveEntity(project.nodes, requireString(input, 'skill'), 'Skill');
-        return jsonResult(skillSummary(project, node));
+        return toolResult(skillSummary(project, node));
       },
     },
     {
@@ -306,7 +351,7 @@ function toolDefinitions(): ToolDefinition[] {
           }
           return { id, name: requestedName };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -354,7 +399,7 @@ function toolDefinitions(): ToolDefinition[] {
           node.data = data;
           return { id: idOf(node), name: nameOf(node), position: positionOf(node) };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -367,7 +412,7 @@ function toolDefinitions(): ToolDefinition[] {
         required: ['skill'],
         additionalProperties: false,
       },
-      annotations: write,
+      annotations: destructive,
       execute: async (input) => {
         const reference = requireString(input, 'skill');
         const applied = await applyProjectMutation((project) => {
@@ -377,7 +422,7 @@ function toolDefinitions(): ToolDefinition[] {
           project.edges = project.edges.filter((edge) => edge.source !== id && edge.target !== id);
           return { id, name: nameOf(node) };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -409,7 +454,7 @@ function toolDefinitions(): ToolDefinition[] {
           project.edges.push({ id: uid('edge'), source: sourceId, target: targetId, type: 'skillLink' });
           return { prerequisite: sourceId, skill: targetId };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -439,7 +484,7 @@ function toolDefinitions(): ToolDefinition[] {
           if (project.edges.length === beforeCount) throw new Error('That prerequisite relationship does not exist.');
           return { prerequisite: sourceId, skill: targetId };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -448,7 +493,7 @@ function toolDefinitions(): ToolDefinition[] {
       description: 'List all standalone perk nodes in the current project.',
       inputSchema: emptySchema,
       annotations: readOnly,
-      execute: () => jsonResult(currentProject().perks.map((perk) => ({
+      execute: () => toolResult(currentProject().perks.map((perk) => ({
         id: idOf(perk), name: nameOf(perk), position: positionOf(perk), upgrades: cloneValue(dataOf(perk).upgrades ?? []),
       }))),
     },
@@ -479,7 +524,7 @@ function toolDefinitions(): ToolDefinition[] {
           });
           return { id, name };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -514,7 +559,7 @@ function toolDefinitions(): ToolDefinition[] {
           }
           return { id: nextId, name: nextName, position: positionOf(perk) };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -527,7 +572,7 @@ function toolDefinitions(): ToolDefinition[] {
         required: ['perk'],
         additionalProperties: false,
       },
-      annotations: write,
+      annotations: destructive,
       execute: async (input) => {
         const reference = requireString(input, 'perk');
         const applied = await applyProjectMutation((project) => {
@@ -536,7 +581,7 @@ function toolDefinitions(): ToolDefinition[] {
           project.perks = project.perks.filter((item) => idOf(item) !== id);
           return { id, name: nameOf(perk) };
         });
-        return jsonResult(applied);
+        return toolResult(applied);
       },
     },
     {
@@ -545,7 +590,7 @@ function toolDefinitions(): ToolDefinition[] {
       description: 'Return all stat definitions in the current project, including keys, groups, types, and base values.',
       inputSchema: emptySchema,
       annotations: readOnly,
-      execute: () => jsonResult(currentProject().stats),
+      execute: () => toolResult(currentProject().stats),
     },
     {
       name: `${TOOL_PREFIX}list_currencies`,
@@ -553,7 +598,7 @@ function toolDefinitions(): ToolDefinition[] {
       description: 'Return all currency definitions in the current project.',
       inputSchema: emptySchema,
       annotations: readOnly,
-      execute: () => jsonResult(currentProject().currencies),
+      execute: () => toolResult(currentProject().currencies),
     },
   ];
 }
@@ -576,11 +621,20 @@ async function registerTools() {
     if (modelContext.getTools) {
       const visible = await modelContext.getTools();
       const discovered = visible.map((tool) => tool.name).filter((name): name is string => typeof name === 'string');
-      names = names.filter((name) => discovered.includes(name));
+      const confirmed = names.filter((name) => discovered.includes(name));
+      if (confirmed.length) names = confirmed;
     }
-    registration = { available: true, registering: false, registered: true, toolNames: names, error: null };
+    registration = {
+      runtimeLoading: false,
+      available: true,
+      registering: false,
+      registered: true,
+      toolNames: names,
+      error: null,
+    };
   } catch (error) {
     registration = {
+      runtimeLoading: false,
       available: true,
       registering: false,
       registered: false,
@@ -591,9 +645,17 @@ async function registerTools() {
   renderUi();
 }
 
+function relayCommand() {
+  return `npx -y @mcp-b/webmcp-local-relay@${RELAY_VERSION} --widget-origin ${window.location.origin} --invoke-timeout ${RELAY_INVOKE_TIMEOUT_MS}`;
+}
+
 function tunnelCommand() {
   const tunnelId = settings.tunnelId || '<YOUR_TUNNEL_ID>';
-  return `tunnel-client runtimes connect --alias skill-tree-maker --tunnel-id ${tunnelId} --runtime-api-key env:TUNNEL_RUNTIME_KEY --mcp-command "npx -y chrome-devtools-mcp@latest --autoConnect --categoryExperimentalWebmcp=true"`;
+  return `tunnel-client runtimes connect --alias skill-tree-maker --tunnel-id ${tunnelId} --runtime-api-key env:TUNNEL_RUNTIME_KEY --mcp-command "${relayCommand()}"`;
+}
+
+function tunnelStatusCommand() {
+  return 'tunnel-client runtimes status skill-tree-maker --json';
 }
 
 async function copyText(value: string) {
@@ -611,51 +673,125 @@ async function copyText(value: string) {
   }
 }
 
-function statusRow(label: string, state: 'ready' | 'missing' | 'external', detail: string) {
-  const stateText = state === 'ready' ? 'Ready' : state === 'missing' ? 'Action needed' : 'External';
-  return `<div class="webmcp-status-row"><span class="webmcp-dot is-${state}"></span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div><span>${stateText}</span></div>`;
+async function ensureRelayEmbed(forceRetry = false) {
+  if (!settings.relayEnabled) {
+    relayEmbedState = 'disabled';
+    renderUi();
+    return;
+  }
+  if (relayEmbedState === 'loaded' || relayEmbedState === 'loading') return;
+
+  const existing = document.getElementById(RELAY_EMBED_ID) as HTMLScriptElement | null;
+  if (existing) {
+    if (!forceRetry) return;
+    existing.remove();
+  }
+
+  relayEmbedState = 'loading';
+  relayEmbedError = null;
+  renderUi();
+
+  const script = document.createElement('script');
+  script.id = RELAY_EMBED_ID;
+  script.src = RELAY_EMBED_URL;
+  script.async = true;
+  script.dataset.relayPort = RELAY_PORT;
+  script.dataset.requestTimeout = RELAY_REQUEST_TIMEOUT_MS;
+  script.addEventListener('load', () => {
+    relayEmbedState = 'loaded';
+    relayEmbedError = null;
+    renderUi();
+  }, { once: true });
+  script.addEventListener('error', () => {
+    relayEmbedState = 'error';
+    relayEmbedError = 'The MCP-B browser relay adapter could not be loaded. Check your network or content-blocking settings, then retry.';
+    renderUi();
+  }, { once: true });
+  document.head.appendChild(script);
+}
+
+function statusRow(label: string, state: 'ready' | 'missing' | 'external', detail: string, stateText?: string) {
+  const text = stateText ?? (state === 'ready' ? 'Ready' : state === 'missing' ? 'Action needed' : 'External');
+  return `<div class="webmcp-status-row"><span class="webmcp-dot is-${state}"></span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div><span>${escapeHtml(text)}</span></div>`;
+}
+
+function relayStatusRow() {
+  if (!settings.relayEnabled) {
+    return statusRow('MCP-B browser relay adapter', 'missing', 'Disabled until you opt in. Normal visitors do not probe localhost.', 'Enable');
+  }
+  if (relayEmbedState === 'loaded') {
+    return statusRow('MCP-B browser relay adapter', 'ready', `Loaded from MCP-B ${RELAY_VERSION}; connects only to loopback relay ports.`, 'Loaded');
+  }
+  if (relayEmbedState === 'error') {
+    return statusRow('MCP-B browser relay adapter', 'missing', relayEmbedError ?? 'Adapter failed to load.', 'Retry');
+  }
+  return statusRow('MCP-B browser relay adapter', 'external', 'Loading the opt-in browser adapter…', 'Loading');
 }
 
 function renderPanel(panel: HTMLElement) {
-  const apiState = registration.available ? 'ready' : 'missing';
-  const apiDetail = registration.available
-    ? registration.registered
-      ? `${registration.toolNames.length} Skill Tree Maker tools registered in this tab.`
-      : registration.registering
-        ? 'Registering Skill Tree Maker tools…'
-        : registration.error ?? 'WebMCP API detected; tools are waiting to register.'
-    : 'Enable WebMCP in Chrome, then reload this page.';
+  const runtimeState = registration.available ? 'ready' : registration.runtimeLoading ? 'external' : 'missing';
+  const runtimeDetail = registration.runtimeLoading
+    ? 'Loading the bundled @mcp-b/global runtime…'
+    : registration.available
+      ? '@mcp-b/global supplies document.modelContext even when native WebMCP is unavailable.'
+      : registration.error ?? 'MCP-B runtime initialization failed.';
+  const toolsState = registration.registered ? 'ready' : registration.registering ? 'external' : 'missing';
+  const toolsDetail = registration.registered
+    ? `${registration.toolNames.length} Skill Tree Maker tools are registered in this tab.`
+    : registration.registering
+      ? 'Registering Skill Tree Maker tools…'
+      : registration.error ?? 'Waiting for the MCP-B runtime.';
 
   panel.hidden = !panelOpen;
   panel.innerHTML = `
-    <div class="webmcp-head"><div><strong>ChatGPT / WebMCP</strong><small>Native page tools · no extension or local Skill Tree Maker server</small></div><button type="button" data-webmcp-action="close" aria-label="Close">×</button></div>
-    <div class="webmcp-intro">Skill Tree Maker exposes structured tools directly from the running page. The tools operate on the active editor state, so the same setup works for Local and Online projects. No Cloudflare routing is involved.</div>
+    <div class="webmcp-head"><div><strong>ChatGPT / MCP-B</strong><small>Page WebMCP tools → local relay → OpenAI Secure Tunnel</small></div><button type="button" data-webmcp-action="close" aria-label="Close">×</button></div>
+    <div class="webmcp-intro">Skill Tree Maker now uses MCP-B to expose the running editor directly as WebMCP tools. No Chrome DevTools MCP, remote debugging, extension, Skill Tree Maker companion server, Firebase-specific bridge, or Cloudflare routing is required.</div>
     <div class="webmcp-status">
-      ${statusRow('WebMCP page tools', apiState, apiDetail)}
-      ${statusRow('Chrome DevTools MCP', 'external', 'Runs locally and discovers this page’s WebMCP tools through Chrome.')}
-      ${statusRow('OpenAI Secure Tunnel', 'external', settings.tunnelId || 'Paste your tunnel ID below to generate the connect command.')}
+      ${statusRow('MCP-B WebMCP runtime', runtimeState, runtimeDetail)}
+      ${statusRow('Skill Tree Maker page tools', toolsState, toolsDetail)}
+      ${relayStatusRow()}
+      ${statusRow('Local MCP-B relay + OpenAI tunnel', 'external', settings.tunnelId || 'Runs outside the browser; use the generated command below.')}
     </div>
     ${registration.error ? `<div class="webmcp-error">${escapeHtml(registration.error)}</div>` : ''}
+    ${relayEmbedError ? `<div class="webmcp-error">${escapeHtml(relayEmbedError)}</div>` : ''}
     <div class="webmcp-section">
-      <div class="webmcp-section-title"><strong>1. Enable WebMCP in Chrome</strong><small>The site can verify the API automatically once Chrome exposes it.</small></div>
-      <ol class="webmcp-steps">
-        <li>Use Chrome 150 or newer. Until the WebMCP origin trial is enabled for this site, open <code>chrome://flags/#enable-webmcp-testing</code>, set it to Enabled, and relaunch Chrome.</li>
-        <li>Open <code>chrome://inspect/#remote-debugging</code> and enable remote debugging so Chrome DevTools MCP can attach to your existing browser profile.</li>
-        <li>Keep Skill Tree Maker open in that Chrome profile. The page registers its tools automatically whenever <code>document.modelContext</code> is available.</li>
-      </ol>
-      <div class="webmcp-actions"><button type="button" data-webmcp-action="check">Check WebMCP</button><a href="${WEBMCP_DOCS_URL}" target="_blank" rel="noreferrer">WebMCP docs</a><a href="${CHROME_MCP_URL}" target="_blank" rel="noreferrer">Chrome DevTools MCP</a></div>
+      <div class="webmcp-section-title"><strong>1. Enable the browser relay</strong><small>The WebMCP runtime and tools are already bundled with this site. This opt-in loads MCP-B’s browser relay adapter only for users who want a local MCP connection.</small></div>
+      <div class="webmcp-actions">
+        ${settings.relayEnabled
+          ? `<button type="button" data-webmcp-action="${relayEmbedState === 'error' ? 'retry-relay' : 'check'}">${relayEmbedState === 'error' ? 'Retry relay adapter' : 'Refresh tool status'}</button>`
+          : '<button type="button" data-webmcp-action="enable-relay">Enable browser relay</button>'}
+        <a href="${MCP_B_RELAY_DOCS_URL}" target="_blank" rel="noreferrer">MCP-B relay docs</a>
+      </div>
+      <small class="webmcp-note">The adapter opens a WebSocket only to <code>127.0.0.1</code>. Chrome may ask for Local Network Access the first time a public page connects to loopback; allow it for this integration. If the local relay is not running yet, the adapter waits and reconnects later.</small>
     </div>
     <div class="webmcp-section">
-      <div class="webmcp-section-title"><strong>2. Connect your OpenAI tunnel</strong><small>The tunnel ID is not secret. Keep the runtime API key in an environment variable on your computer, never in this page.</small></div>
+      <div class="webmcp-section-title"><strong>2. Connect your OpenAI tunnel</strong><small>The browser cannot install native software or store your runtime API key safely. These are the only remaining local setup steps.</small></div>
+      <ol class="webmcp-steps">
+        <li>Install <code>tunnel-client</code>. Install Node.js too if <code>npx</code> is not already available on your computer.</li>
+        <li>Create a restricted OpenAI runtime API key with Tunnels Read + Use permissions and expose it locally as <code>TUNNEL_RUNTIME_KEY</code>. Do not paste that secret into this page.</li>
+        <li>Paste the non-secret tunnel ID below, then run the generated command. <code>tunnel-client</code> will launch <code>@mcp-b/webmcp-local-relay</code> itself as the stdio MCP server.</li>
+        <li>In ChatGPT Settings → Connectors, choose a Tunnel connection and select the same tunnel.</li>
+      </ol>
       <label class="webmcp-field"><span>Tunnel ID</span><input type="text" data-webmcp-tunnel-id spellcheck="false" placeholder="tunnel_0123456789abcdef..." value="${escapeHtml(settings.tunnelId)}"></label>
-      <div class="webmcp-actions"><button type="button" data-webmcp-action="save-tunnel">Save tunnel ID</button><a href="${TUNNELS_URL}" target="_blank" rel="noreferrer">Open Tunnels</a><a href="${API_KEYS_URL}" target="_blank" rel="noreferrer">Runtime API keys</a><a href="${TUNNEL_CLIENT_URL}" target="_blank" rel="noreferrer">tunnel-client</a></div>
+      <div class="webmcp-actions"><button type="button" data-webmcp-action="save-tunnel">Save tunnel ID</button><a href="${TUNNELS_URL}" target="_blank" rel="noreferrer">Open Tunnels</a><a href="${API_KEYS_URL}" target="_blank" rel="noreferrer">Runtime API keys</a><a href="${TUNNEL_CLIENT_URL}" target="_blank" rel="noreferrer">tunnel-client</a><a href="${NODE_DOWNLOAD_URL}" target="_blank" rel="noreferrer">Node.js</a></div>
       <div class="webmcp-command"><code>${escapeHtml(tunnelCommand())}</code><button type="button" data-webmcp-action="copy-command">Copy</button></div>
-      <small class="webmcp-note">Set <code>TUNNEL_RUNTIME_KEY</code> on your computer first. This one command starts the tunnel runtime and launches Chrome DevTools MCP through <code>npx</code>; no Skill Tree Maker extension, companion, localhost API, or Firebase-specific bridge is required.</small>
+      <small class="webmcp-note">The relay is restricted to <code>${escapeHtml(window.location.origin)}</code> and runs on loopback only. The browser adapter uses port <code>${RELAY_PORT}</code>; the CLI automatically discovers compatible relay instances around that root port.</small>
+      <div class="webmcp-command"><code>${escapeHtml(tunnelStatusCommand())}</code><button type="button" data-webmcp-action="copy-status-command">Copy status check</button></div>
+      <small class="webmcp-note">After connecting, this status command should report the managed runtime as running and healthy before you expect ChatGPT tool calls to work.</small>
+    </div>
+    <div class="webmcp-section">
+      <div class="webmcp-section-title"><strong>3. Use it in ChatGPT</strong><small>Keep this Skill Tree Maker tab open while you use the tunnel.</small></div>
+      <ol class="webmcp-steps">
+        <li>Open the tunnel connection in ChatGPT and ask it to inspect the current Skill Tree Maker project.</li>
+        <li>For diagnostics, the relay exposes <code>webmcp_list_sources</code> and <code>webmcp_list_tools</code>. The current tab should appear as a source with the Skill Tree Maker tools below.</li>
+        <li>Edits execute inside this page and therefore use the editor’s existing Local or Online persistence, validation, history, and collaboration path.</li>
+      </ol>
+      <div class="webmcp-actions"><a href="${CHATGPT_CONNECTORS_URL}" target="_blank" rel="noreferrer">Open ChatGPT Connectors</a></div>
     </div>
     <div class="webmcp-section compact">
-      <div class="webmcp-section-title"><strong>What the page exposes now</strong><small>${registration.toolNames.length ? registration.toolNames.map((name) => name.replace(TOOL_PREFIX, '')).join(' · ') : 'Tools appear here after WebMCP is enabled.'}</small></div>
+      <div class="webmcp-section-title"><strong>Exposed Skill Tree Maker tools</strong><small>${registration.toolNames.length ? registration.toolNames.map((name) => name.replace(TOOL_PREFIX, '')).join(' · ') : 'Tools are still initializing.'}</small></div>
     </div>
-    <div class="webmcp-footer"><span>The page can verify WebMCP itself. Chrome DevTools MCP and tunnel-client run outside the browser, so their connection state cannot be inspected directly by the site.</span></div>`;
+    <div class="webmcp-footer"><span>The site can verify its own MCP-B runtime, tool registration, and whether the relay adapter script loaded. The local relay process and OpenAI tunnel run outside the browser, so use <code>tunnel-client runtimes status</code> or the relay management tools to verify those stages.</span></div>`;
 }
 
 function renderUi() {
@@ -666,7 +802,11 @@ function renderUi() {
     trigger.classList.toggle('is-ready', ready);
     trigger.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
     const status = trigger.querySelector<HTMLElement>('.webmcp-button-status');
-    if (status) status.textContent = ready ? `${registration.toolNames.length} tools` : registration.available ? 'Setup' : 'Enable';
+    if (status) {
+      status.textContent = ready
+        ? settings.relayEnabled && relayEmbedState === 'loaded' ? 'Relay ready' : `${registration.toolNames.length} tools`
+        : registration.runtimeLoading ? 'Loading' : 'Setup';
+    }
   }
   if (panel) renderPanel(panel);
 }
@@ -679,14 +819,17 @@ function installUi() {
 
   const control = document.createElement('div');
   control.className = 'webmcp-control';
-  control.innerHTML = `<button type="button" class="ghost webmcp-button" aria-expanded="false"><span class="webmcp-icon" aria-hidden="true">⌁</span><span class="webmcp-button-label">ChatGPT</span><small class="webmcp-button-status">Setup</small></button><div class="webmcp-panel" hidden></div>`;
+  control.innerHTML = `<button type="button" class="ghost webmcp-button" aria-expanded="false"><span class="webmcp-icon" aria-hidden="true">⌁</span><span class="webmcp-button-label">ChatGPT</span><small class="webmcp-button-status">Loading</small></button><div class="webmcp-panel" hidden></div>`;
   actions.insertBefore(control, actions.firstChild);
 
   control.querySelector<HTMLButtonElement>('.webmcp-button')?.addEventListener('click', (event) => {
     event.stopPropagation();
     panelOpen = !panelOpen;
     renderUi();
-    if (panelOpen) void registerTools();
+    if (panelOpen) {
+      void registerTools();
+      if (settings.relayEnabled) void ensureRelayEmbed();
+    }
   });
 
   const panel = control.querySelector<HTMLElement>('.webmcp-panel');
@@ -698,15 +841,22 @@ function installUi() {
       panelOpen = false;
       renderUi();
     } else if (action === 'check') {
-      registration.available = Boolean((document as WebMcpDocument).modelContext);
-      registration.error = null;
-      if (!registration.available) registration.registered = false;
       void registerTools();
+      if (settings.relayEnabled) void ensureRelayEmbed();
+    } else if (action === 'enable-relay') {
+      enableRelay();
+      renderUi();
+    } else if (action === 'retry-relay') {
+      relayEmbedState = 'disabled';
+      relayEmbedError = null;
+      void ensureRelayEmbed(true);
     } else if (action === 'save-tunnel') {
       saveTunnelId(control.querySelector<HTMLInputElement>('[data-webmcp-tunnel-id]')?.value ?? '');
       renderUi();
     } else if (action === 'copy-command') {
       void copyText(tunnelCommand());
+    } else if (action === 'copy-status-command') {
+      void copyText(tunnelStatusCommand());
     }
   });
 
@@ -726,8 +876,35 @@ function installUi() {
   });
 
   renderUi();
-  void registerTools();
   return true;
+}
+
+async function initializeMcpBRuntime() {
+  try {
+    const mcpWindow = window as McpBWindow;
+    mcpWindow.__webModelContextOptions = {
+      autoInitialize: true,
+      transport: { tabServer: false, iframeServer: false },
+      nativeModelContextBehavior: 'preserve',
+      installTestingShim: 'if-missing',
+    };
+    await import('@mcp-b/global');
+    registration.runtimeLoading = false;
+    registration.available = Boolean((document as WebMcpDocument).modelContext);
+    if (!registration.available) throw new Error('@mcp-b/global loaded but document.modelContext is unavailable.');
+    await registerTools();
+    if (settings.relayEnabled) await ensureRelayEmbed();
+  } catch (error) {
+    registration = {
+      runtimeLoading: false,
+      available: false,
+      registering: false,
+      registered: false,
+      toolNames: [],
+      error: error instanceof Error ? error.message : 'MCP-B WebMCP runtime initialization failed.',
+    };
+    renderUi();
+  }
 }
 
 if (!installUi()) {
@@ -737,8 +914,10 @@ if (!installUi()) {
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 
+void initializeMcpBRuntime();
+
 window.addEventListener('focus', () => {
-  registration.available = Boolean((document as WebMcpDocument).modelContext);
-  if (!registration.registered) void registerTools();
+  if (!registration.registered && registration.available) void registerTools();
+  if (settings.relayEnabled && relayEmbedState !== 'loaded') void ensureRelayEmbed();
   else renderUi();
 });
