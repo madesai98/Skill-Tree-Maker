@@ -72,7 +72,7 @@ if (-not $tunnelExe) {
     if ($sumsAsset) {
       $sumsResponse = Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing
       $sumsText = [string]$sumsResponse.Content
-      foreach ($line in ($sumsText -split "`r?`n")) {
+      foreach ($line in ($sumsText -split '[\r\n]+')) {
         $lineMatch = [regex]::Match($line, '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
         if (-not $lineMatch.Success) { continue }
         $candidateName = [IO.Path]::GetFileName($lineMatch.Groups[2].Value.Trim())
