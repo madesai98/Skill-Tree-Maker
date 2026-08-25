@@ -490,7 +490,7 @@ function setupMarkup() {
     <div class="webmcp-section-title"><strong>2. Create your one-file bridge launcher</strong><small>Provide the two OpenAI values, choose a release platform, and download a ${scriptKind} launcher. The API key is used only to build the file and is never written to browser storage.</small></div>
     <div class="bridge-setup-grid">
       <label class="webmcp-field"><span>Tunnel ID</span><input type="text" data-bridge-tunnel-id spellcheck="false" autocomplete="off" placeholder="tunnel_0123456789abcdef0123456789abcdef" value="${escapeHtml(saved.tunnelId)}"></label>
-      <label class="webmcp-field"><span>Runtime API key</span><input type="password" data-bridge-api-key spellcheck="false" autocomplete="new-password" placeholder="Paste restricted Tunnels Read + Use key" value="${escapeHtml(runtimeApiKey)}"></label>
+      <label class="webmcp-field"><span>Runtime API key</span><input type="password" data-bridge-api-key spellcheck="false" autocomplete="off" data-1p-ignore="true" data-lpignore="true" placeholder="Paste restricted Tunnels Read + Use key" value="${escapeHtml(runtimeApiKey)}"></label>
       <label class="webmcp-field"><span>Platform</span><select data-bridge-platform ${releaseState.status === 'ready' ? '' : 'disabled'}>${platformOptionsHtml()}</select></label>
     </div>
     <div class="bridge-release-note${releaseState.status === 'error' ? ' is-error' : ''}">${releaseNote}</div>
@@ -516,9 +516,15 @@ function setupMarkup() {
     <div class="webmcp-actions"><a href="${CHATGPT_CONNECTORS_URL}" target="_blank" rel="noreferrer">Open ChatGPT Connectors</a></div>`;
 }
 
-function findLegacySection(panel: HTMLElement) {
-  return Array.from(panel.querySelectorAll<HTMLElement>(':scope > .webmcp-section')).find((section) =>
+function findLegacySections(panel: HTMLElement) {
+  return Array.from(panel.querySelectorAll<HTMLElement>(':scope > .webmcp-section')).filter((section) =>
     section.querySelector('.webmcp-section-title strong')?.textContent?.trim() === '2. Connect your OpenAI tunnel',
+  );
+}
+
+function findUseSection(panel: HTMLElement) {
+  return Array.from(panel.querySelectorAll<HTMLElement>(':scope > .webmcp-section')).find((section) =>
+    section.querySelector('.webmcp-section-title strong')?.textContent?.trim() === '3. Use it in ChatGPT',
   ) ?? null;
 }
 
@@ -527,21 +533,24 @@ function ensureSetupSection() {
   if (!panel) return;
 
   let section = panel.querySelector<HTMLElement>(':scope > .bridge-launch-section');
-  const legacy = findLegacySection(panel);
-  if (legacy) {
-    if (!section) {
-      section = document.createElement('div');
-      section.className = 'webmcp-section bridge-launch-section';
-      section.innerHTML = setupMarkup();
-      legacy.replaceWith(section);
-      void refreshPlatforms();
-    } else {
-      legacy.remove();
+  const legacySections = findLegacySections(panel);
+
+  if (!section) {
+    section = document.createElement('div');
+    section.className = 'webmcp-section bridge-launch-section';
+    const legacy = legacySections.shift();
+    if (legacy) legacy.replaceWith(section);
+    else {
+      const useSection = findUseSection(panel);
+      if (useSection) useSection.before(section);
+      else panel.append(section);
     }
-    return;
   }
 
-  if (section && !section.innerHTML) section.innerHTML = setupMarkup();
+  for (const legacy of legacySections) legacy.remove();
+
+  if (!section.innerHTML) section.innerHTML = setupMarkup();
+  if (releaseState.status === 'idle') void refreshPlatforms();
 }
 
 function renderSetup() {
@@ -574,7 +583,7 @@ function installHandlers() {
     const action = target.closest<HTMLElement>('[data-bridge-action]')?.dataset.bridgeAction;
     if (action === 'refresh-platforms') void refreshPlatforms(true);
     if (action === 'download-script') downloadScript();
-  });
+  }, true);
 }
 
 function startObserver() {
