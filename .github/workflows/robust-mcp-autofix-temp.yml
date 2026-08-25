@@ -1,0 +1,96 @@
+name: Temporary robust MCP autofix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fixes:
+    if: github.event.pull_request.head.ref == 'fix/robust-local-mcp-connection'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply narrow compatibility and launcher edits
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new, count=None):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  if new in text:
+                      return
+                  raise SystemExit(f'Expected text not found in {path}: {old!r}')
+              text = text.replace(old, new, -1 if count is None else count)
+              p.write_text(text)
+
+          replace(
+              'src/webMcp.ts',
+              "installTestingShim: 'if-missing',",
+              'installTestingShim: true,',
+              1,
+          )
+          replace(
+              'src/webMcpLocalConnection.ts',
+              'const tools = await context.getTools();',
+              'const tools = await context.getTools() as RegisteredTool[];',
+          )
+
+          # The browser now uses one stable loopback endpoint. Pin every generated
+          # relay launcher to that same port so an unrelated process fails clearly
+          # instead of silently moving the relay somewhere the page cannot reach.
+          for path in ['src/webMcpWindowsLauncherFix.ts', 'src/webMcpEnvironmentSetup.ts']:
+              p = Path(path)
+              text = p.read_text()
+              if "const RELAY_PORT = '9333';" not in text:
+                  text = text.replace(
+                      "const RELAY_VERSION = '5.0.1';",
+                      "const RELAY_VERSION = '5.0.1';\nconst RELAY_PORT = '9333';",
+                      1,
+                  )
+              if '$RelayPort = ${psSingleQuote(RELAY_PORT)}' not in text:
+                  text = text.replace(
+                      '$RelayInvokeTimeout = ${psSingleQuote(RELAY_INVOKE_TIMEOUT_MS)}',
+                      '$RelayInvokeTimeout = ${psSingleQuote(RELAY_INVOKE_TIMEOUT_MS)}\n$RelayPort = ${psSingleQuote(RELAY_PORT)}',
+                      1,
+                  )
+              text = text.replace(
+                  "' --widget-origin ' + $WidgetOrigin",
+                  "' --port ' + $RelayPort + ' --widget-origin ' + $WidgetOrigin",
+              )
+              if 'RELAY_PORT=${shellSingleQuote(RELAY_PORT)}' not in text and 'RELAY_VERSION=${shellSingleQuote(RELAY_VERSION)}' in text:
+                  text = text.replace(
+                      'RELAY_VERSION=${shellSingleQuote(RELAY_VERSION)}',
+                      'RELAY_VERSION=${shellSingleQuote(RELAY_VERSION)}\nRELAY_PORT=${shellSingleQuote(RELAY_PORT)}',
+                      1,
+                  )
+              text = text.replace(
+                  '--widget-origin $WIDGET_ORIGIN --invoke-timeout $RELAY_INVOKE_TIMEOUT',
+                  '--port $RELAY_PORT --widget-origin $WIDGET_ORIGIN --invoke-timeout $RELAY_INVOKE_TIMEOUT',
+              )
+              text = text.replace(
+                  'Bridge startup completed. Keep the Skill Tree Maker browser tab open and enable the same tunnel in ChatGPT.',
+                  'Local bridge runtime is healthy. It can start before or after the Skill Tree Maker page; the page reconnects automatically when the relay is available.',
+              )
+              p.write_text(text)
+
+      - name: Commit autofix if needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No autofix changes needed.'
+            exit 0
+          fi
+          git config user.name 'Skill Tree Maker CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src/webMcp.ts src/webMcpLocalConnection.ts src/webMcpWindowsLauncherFix.ts src/webMcpEnvironmentSetup.ts
+          git commit -m 'Fix MCP-B 5 compatibility and pin relay port'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
