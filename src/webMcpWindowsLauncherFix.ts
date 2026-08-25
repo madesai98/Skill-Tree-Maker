@@ -72,8 +72,8 @@ if (-not $tunnelExe) {
     if ($sumsAsset) {
       $sumsResponse = Invoke-WebRequest -Uri $sumsAsset.browser_download_url -UseBasicParsing
       $sumsText = [string]$sumsResponse.Content
-      foreach ($line in ($sumsText -split '[\r\n]+')) {
-        $lineMatch = [regex]::Match($line, '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$')
+      foreach ($line in ($sumsText -split \"\\r?\\n\")) {
+        $lineMatch = [regex]::Match($line, '^([0-9a-fA-F]{64})\\s+\\*?(.+?)\\s*$')
         if (-not $lineMatch.Success) { continue }
         $candidateName = [IO.Path]::GetFileName($lineMatch.Groups[2].Value.Trim())
         if ($candidateName -eq $assetName) {
@@ -83,7 +83,7 @@ if (-not $tunnelExe) {
       }
     }
   }
-  if (-not $expectedHash) { Fail "The GitHub release did not provide a SHA256 digest for $assetName." }
+  if ([string]::IsNullOrWhiteSpace($expectedHash)) { Fail "GitHub did not publish a SHA256 digest for $assetName." }
   $actual = (Get-FileHash -Algorithm SHA256 -Path $tempZip).Hash.ToLowerInvariant()
   if ($actual -ne $expectedHash) { Fail 'The tunnel-client download failed SHA256 verification.' }
   Write-Step 'Verified tunnel-client SHA256.'
@@ -98,18 +98,29 @@ if (-not $tunnelExe) {
   $tunnelExe = $cached.FullName
 }
 
-function Find-Npx {
-  $cmd = Get-Command npx.cmd -ErrorAction SilentlyContinue
-  if (-not $cmd) { $cmd = Get-Command npx -ErrorAction SilentlyContinue }
-  if ($cmd) { return $cmd.Source }
-  $local = Get-ChildItem -Path $NodeDir -Filter 'npx.cmd' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($local) { return $local.FullName }
+function Find-NodeRuntime {
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if (-not $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction SilentlyContinue }
+  if ($nodeCommand) {
+    $nodeExe = $nodeCommand.Source
+    $nodeRoot = Split-Path -Parent $nodeExe
+    $npxCli = Join-Path $nodeRoot 'node_modules\\npm\\bin\\npx-cli.js'
+    if (Test-Path $npxCli) {
+      return @($nodeExe, $npxCli)
+    }
+  }
+
+  $localNode = Get-ChildItem -Path $NodeDir -Filter 'node.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  $localNpxCli = Get-ChildItem -Path $NodeDir -Filter 'npx-cli.js' -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '[\\/]npm[\\/]bin[\\/]npx-cli\\.js$' } | Select-Object -First 1
+  if ($localNode -and $localNpxCli) {
+    return @($localNode.FullName, $localNpxCli.FullName)
+  }
   return $null
 }
 
-$npx = Find-Npx
-if (-not $npx) {
-  Write-Step 'Node.js/npx was not found. Installing a portable Node.js LTS copy into this bridge folder...'
+$nodeRuntime = Find-NodeRuntime
+if (-not $nodeRuntime) {
+  Write-Step 'A usable Node.js/npm runtime was not found. Installing a portable Node.js LTS copy into this bridge folder...'
   $nodeIndex = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json'
   $nodeRelease = $nodeIndex | Where-Object { $_.lts } | Select-Object -First 1
   if (-not $nodeRelease) { Fail 'Could not determine the current Node.js LTS release.' }
@@ -122,22 +133,38 @@ if (-not $npx) {
   New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
   Expand-Archive -Path $nodeZip -DestinationPath $NodeDir -Force
   Remove-Item -Force $nodeZip -ErrorAction SilentlyContinue
-  $npx = Find-Npx
-  if (-not $npx) { Fail 'Portable Node.js installed, but npx.cmd could not be found.' }
+  $nodeRuntime = Find-NodeRuntime
+  if (-not $nodeRuntime) { Fail 'Portable Node.js installed, but node.exe and npm npx-cli.js could not be found.' }
   Write-Step "Installed portable Node.js $nodeVersion."
 }
 
+$nodeExe = [string]$nodeRuntime[0]
+$npxCli = [string]$nodeRuntime[1]
+$nodeForMcp = $nodeExe.Replace('\\', '/')
+$npxCliForMcp = $npxCli.Replace('\\', '/')
+
 $env:TUNNEL_RUNTIME_KEY = $RuntimeApiKey
-$relayCommand = '"' + $npx + '" -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+$relayCommand = '"' + $nodeForMcp + '" "' + $npxCliForMcp + '" -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+
+# Always stop the previous managed process before reconnecting so changes to the
+# MCP child command are actually applied instead of reusing an unhealthy runtime.
+& $tunnelExe runtimes stop $Alias *> $null
 
 Write-Step 'Starting or refreshing the managed Skill Tree Maker tunnel runtime...'
-& $tunnelExe runtimes connect --alias $Alias --tunnel-id $TunnelId --runtime-api-key 'env:TUNNEL_RUNTIME_KEY' --mcp-command $relayCommand
-if ($LASTEXITCODE -ne 0) { Fail "tunnel-client runtimes connect failed with exit code $LASTEXITCODE." }
+$connectOutput = (& $tunnelExe runtimes connect --alias $Alias --tunnel-id $TunnelId --runtime-api-key 'env:TUNNEL_RUNTIME_KEY' --mcp-command $relayCommand --json 2>&1 | Out-String).Trim()
+$connectExit = $LASTEXITCODE
+if ($connectOutput) { Write-Host $connectOutput }
+if ($connectExit -ne 0) {
+  Write-Host '[Skill Tree Maker] The JSON above contains tunnel-client launch diagnostics and log_tail for the failed runtime.' -ForegroundColor Yellow
+  Fail "tunnel-client runtimes connect failed with exit code $connectExit."
+}
 
 Start-Sleep -Seconds 2
 Write-Step 'Checking runtime status...'
-& $tunnelExe runtimes status $Alias --json
-if ($LASTEXITCODE -ne 0) { Fail "tunnel-client runtimes status failed with exit code $LASTEXITCODE." }
+$statusOutput = (& $tunnelExe runtimes status $Alias --json 2>&1 | Out-String).Trim()
+$statusExit = $LASTEXITCODE
+if ($statusOutput) { Write-Host $statusOutput }
+if ($statusExit -ne 0) { Fail "tunnel-client runtimes status failed with exit code $statusExit." }
 
 Write-Host ''
 Write-Host 'Bridge startup completed. Keep the Skill Tree Maker browser tab open and enable the same tunnel in ChatGPT.' -ForegroundColor Green
