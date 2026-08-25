@@ -1,55 +1,139 @@
 import './statSearchSelect.css';
+import {
+  recommendUpgradeStat,
+  type UpgradeRecommendationEdge,
+  type UpgradeRecommendationNode,
+  type UpgradeRecommendationStat,
+  type UpgradeStatRecommendation,
+} from './statUpgradeRecommendation';
 
 const STORAGE_KEY = 'incremental-td-skill-tree:v2';
 const ENHANCED_ATTR = 'data-fuzzy-stat-select';
+const CONTEXT_SORT_THRESHOLD = 42;
 
 type StoredStat = {
   id?: unknown;
   key?: unknown;
   name?: unknown;
+  type?: unknown;
+  groupId?: unknown;
   groupName?: unknown;
+  groupKey?: unknown;
 };
 
-type SearchOption = {
-  id: string;
-  name: string;
-  groupName: string;
-  gameKey: string;
+type StoredUpgrade = {
+  statId?: unknown;
+};
+
+type StoredNode = {
+  id?: unknown;
+  data?: unknown;
+};
+
+type StoredEdge = {
+  source?: unknown;
+  target?: unknown;
+};
+
+type ProjectMetadata = {
+  stats: Map<string, UpgradeRecommendationStat>;
+  nodes: UpgradeRecommendationNode[];
+  edges: UpgradeRecommendationEdge[];
+};
+
+type SearchOption = UpgradeRecommendationStat & {
   option: HTMLOptionElement;
 };
 
 type SearchGroup = {
+  id: string;
   name: string;
   options: SearchOption[];
+  originalIndex: number;
 };
 
-function readStatMetadata() {
-  const metadata = new Map<string, { key: string; groupName: string }>();
+type PendingSmartDefault = {
+  nodeId: string;
+  previousCount: number;
+  expiresAt: number;
+};
+
+let pendingSmartDefault: PendingSmartDefault | null = null;
+
+function readProjectMetadata(): ProjectMetadata {
+  const stats = new Map<string, UpgradeRecommendationStat>();
+  const nodes: UpgradeRecommendationNode[] = [];
+  const edges: UpgradeRecommendationEdge[] = [];
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return metadata;
-    const project = JSON.parse(raw) as { stats?: unknown };
-    if (!Array.isArray(project.stats)) return metadata;
-    project.stats.forEach((item) => {
-      if (!item || typeof item !== 'object') return;
-      const stat = item as StoredStat;
-      if (typeof stat.id !== 'string') return;
-      metadata.set(stat.id, {
-        key: typeof stat.key === 'string' ? stat.key : '',
-        groupName: typeof stat.groupName === 'string' ? stat.groupName : '',
+    if (!raw) return { stats, nodes, edges };
+    const project = JSON.parse(raw) as { stats?: unknown; nodes?: unknown; edges?: unknown };
+
+    if (Array.isArray(project.stats)) {
+      project.stats.forEach((item) => {
+        if (!item || typeof item !== 'object') return;
+        const stat = item as StoredStat;
+        if (typeof stat.id !== 'string') return;
+        stats.set(stat.id, {
+          id: stat.id,
+          key: typeof stat.key === 'string' ? stat.key : '',
+          name: typeof stat.name === 'string' ? stat.name : '',
+          type: stat.type === 'boolean' ? 'boolean' : 'number',
+          groupId: typeof stat.groupId === 'string' ? stat.groupId : '',
+          groupName: typeof stat.groupName === 'string' ? stat.groupName : '',
+          groupKey: typeof stat.groupKey === 'string' ? stat.groupKey : '',
+        });
       });
-    });
+    }
+
+    if (Array.isArray(project.nodes)) {
+      project.nodes.forEach((item) => {
+        if (!item || typeof item !== 'object') return;
+        const node = item as StoredNode;
+        if (typeof node.id !== 'string' || !node.data || typeof node.data !== 'object') return;
+        const data = node.data as { name?: unknown; upgrades?: unknown };
+        const upgrades = Array.isArray(data.upgrades)
+          ? data.upgrades.flatMap((upgradeItem) => {
+              if (!upgradeItem || typeof upgradeItem !== 'object') return [];
+              const upgrade = upgradeItem as StoredUpgrade;
+              return typeof upgrade.statId === 'string' ? [{ statId: upgrade.statId }] : [];
+            })
+          : [];
+        nodes.push({
+          id: node.id,
+          data: {
+            name: typeof data.name === 'string' ? data.name : '',
+            upgrades,
+          },
+        });
+      });
+    }
+
+    if (Array.isArray(project.edges)) {
+      project.edges.forEach((item) => {
+        if (!item || typeof item !== 'object') return;
+        const edge = item as StoredEdge;
+        if (typeof edge.source !== 'string' || typeof edge.target !== 'string') return;
+        edges.push({ source: edge.source, target: edge.target });
+      });
+    }
   } catch {
     // Search can still use the option and optgroup labels if storage is unavailable.
   }
-  return metadata;
+
+  return { stats, nodes, edges };
+}
+
+function optionName(option: HTMLOptionElement) {
+  return (option.textContent?.trim() ?? '').replace(/\s+—\s+already used$/i, '');
 }
 
 function selectedDisplay(select: HTMLSelectElement) {
   const option = select.selectedOptions[0];
   if (!option) return '';
   const group = option.parentElement instanceof HTMLOptGroupElement ? option.parentElement.label.trim() : '';
-  return group ? `${group} ${option.textContent?.trim() ?? ''}`.trim() : option.textContent?.trim() ?? '';
+  return group ? `${group} ${optionName(option)}`.trim() : optionName(option);
 }
 
 function normalized(value: string) {
@@ -69,8 +153,8 @@ function fuzzyTokenMatches(token: string, candidate: string) {
 function fuzzyMatches(query: string, option: SearchOption) {
   const tokens = normalized(query).split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
-  const fields = [option.name, option.groupName, option.gameKey].map(normalized);
-  const combined = normalized(`${option.groupName} ${option.name} ${option.gameKey}`);
+  const fields = [option.name, option.groupName, option.key].map(normalized);
+  const combined = normalized(`${option.groupName} ${option.name} ${option.key}`);
   return tokens.every((token) => fields.some((field) => fuzzyTokenMatches(token, field)) || fuzzyTokenMatches(token, combined));
 }
 
@@ -79,44 +163,6 @@ function nativeSetSelectValue(select: HTMLSelectElement, value: string) {
   if (valueSetter) valueSetter.call(select, value);
   else select.value = value;
   select.dispatchEvent(new Event('change', { bubbles: true }));
-}
-
-function collectGroups(select: HTMLSelectElement, query: string) {
-  const metadata = readStatMetadata();
-  const groups: SearchGroup[] = [];
-
-  Array.from(select.children).forEach((child) => {
-    if (child instanceof HTMLOptGroupElement) {
-      const options = Array.from(child.querySelectorAll('option')).flatMap<SearchOption>((option) => {
-        const id = option.value;
-        const meta = metadata.get(id);
-        const item: SearchOption = {
-          id,
-          name: option.textContent?.trim() ?? '',
-          groupName: child.label.trim() || meta?.groupName || '',
-          gameKey: meta?.key ?? '',
-          option,
-        };
-        return fuzzyMatches(query, item) ? [item] : [];
-      });
-      if (options.length) groups.push({ name: child.label.trim(), options });
-      return;
-    }
-
-    if (child instanceof HTMLOptionElement) {
-      const meta = metadata.get(child.value);
-      const item: SearchOption = {
-        id: child.value,
-        name: child.textContent?.trim() ?? '',
-        groupName: meta?.groupName ?? '',
-        gameKey: meta?.key ?? '',
-        option: child,
-      };
-      if (fuzzyMatches(query, item)) groups.push({ name: item.groupName, options: [item] });
-    }
-  });
-
-  return groups;
 }
 
 function isStatSelect(select: HTMLSelectElement) {
@@ -128,6 +174,168 @@ function isStatSelect(select: HTMLSelectElement) {
     .join(' ')
     .trim();
   return /^stat\b/i.test(ownText);
+}
+
+function treeInspectorFor(element: Element) {
+  const inspector = element.closest('aside.inspector');
+  return inspector && inspector.closest('.tree-layout') ? inspector : null;
+}
+
+function selectedTreeNodeId(inspector: Element) {
+  return inspector
+    .querySelector('.inspector-scroll > .inspector-section .section-title-row .id-chip')
+    ?.textContent
+    ?.trim() ?? '';
+}
+
+function selectedTreeNodeName(inspector: Element) {
+  const firstSection = inspector.querySelector('.inspector-scroll > .inspector-section');
+  const nameInput = firstSection?.querySelector<HTMLInputElement>('label.field-label > input');
+  return nameInput?.value ?? inspector.querySelector('.inspector-heading h2')?.textContent?.trim() ?? '';
+}
+
+function statSelectsInInspector(inspector: Element) {
+  return Array.from(inspector.querySelectorAll<HTMLSelectElement>('label.field-label.compact > select')).filter(isStatSelect);
+}
+
+function buildSearchGroups(select: HTMLSelectElement, metadata: ProjectMetadata) {
+  const groups: SearchGroup[] = [];
+  let groupIndex = 0;
+
+  Array.from(select.children).forEach((child) => {
+    if (child instanceof HTMLOptGroupElement) {
+      const groupName = child.label.trim();
+      const options = Array.from(child.querySelectorAll('option')).map<SearchOption>((option) => {
+        const meta = metadata.stats.get(option.value);
+        return {
+          id: option.value,
+          key: meta?.key ?? '',
+          name: optionName(option),
+          type: meta?.type ?? 'number',
+          groupId: meta?.groupId || `label:${groupName}`,
+          groupName: groupName || meta?.groupName || '',
+          groupKey: meta?.groupKey ?? '',
+          option,
+        };
+      });
+      const groupId = options[0]?.groupId ?? `label:${groupName}`;
+      groups.push({ id: groupId, name: groupName, options, originalIndex: groupIndex });
+      groupIndex += 1;
+      return;
+    }
+
+    if (child instanceof HTMLOptionElement) {
+      const meta = metadata.stats.get(child.value);
+      const item: SearchOption = {
+        id: child.value,
+        key: meta?.key ?? '',
+        name: optionName(child),
+        type: meta?.type ?? 'number',
+        groupId: meta?.groupId || `ungrouped:${child.value}`,
+        groupName: meta?.groupName ?? '',
+        groupKey: meta?.groupKey ?? '',
+        option: child,
+      };
+      groups.push({ id: item.groupId, name: item.groupName, options: [item], originalIndex: groupIndex });
+      groupIndex += 1;
+    }
+  });
+
+  return groups;
+}
+
+function recommendationForSelect(
+  select: HTMLSelectElement,
+  metadata: ProjectMetadata,
+  groups: SearchGroup[],
+  excludeCurrent: boolean,
+): UpgradeStatRecommendation | null {
+  const inspector = treeInspectorFor(select);
+  if (!inspector) return null;
+  const nodeId = selectedTreeNodeId(inspector);
+  if (!nodeId) return null;
+
+  const options = groups.flatMap((group) => group.options);
+  const eligibleStatIds = new Set(options.filter((item) => !item.option.disabled).map((item) => item.id));
+  const currentStatIds = statSelectsInInspector(inspector)
+    .filter((item) => !excludeCurrent || item !== select)
+    .map((item) => item.value)
+    .filter(Boolean);
+
+  return recommendUpgradeStat({
+    nodeId,
+    nodeName: selectedTreeNodeName(inspector),
+    currentStatIds,
+    stats: options.map(({ option: _option, ...stat }) => stat),
+    nodes: metadata.nodes,
+    edges: metadata.edges,
+    eligibleStatIds,
+  });
+}
+
+function collectGroups(select: HTMLSelectElement, query: string) {
+  const metadata = readProjectMetadata();
+  const baseGroups = buildSearchGroups(select, metadata);
+  const recommendation = recommendationForSelect(select, metadata, baseGroups, false);
+  const preferredOrder = new Map((recommendation?.preferredGroupIds ?? []).map((groupId, index) => [groupId, index]));
+  const hasSearch = normalized(query).length > 0;
+
+  const groups = baseGroups
+    .map((group) => ({
+      ...group,
+      options: group.options.filter((item) => fuzzyMatches(query, item)),
+    }))
+    .filter((group) => group.options.length > 0)
+    .sort((left, right) => {
+      const leftPreferred = preferredOrder.get(left.id);
+      const rightPreferred = preferredOrder.get(right.id);
+      if (leftPreferred !== undefined || rightPreferred !== undefined) {
+        if (leftPreferred === undefined) return 1;
+        if (rightPreferred === undefined) return -1;
+        if (leftPreferred !== rightPreferred) return leftPreferred - rightPreferred;
+      }
+      return left.originalIndex - right.originalIndex;
+    });
+
+  if (!hasSearch && recommendation) {
+    groups.forEach((group) => {
+      if (!preferredOrder.has(group.id)) return;
+      const highestScore = Math.max(...group.options.map((item) => recommendation.scoreByStatId.get(item.id) ?? 0));
+      if (highestScore < CONTEXT_SORT_THRESHOLD) return;
+      group.options = group.options
+        .map((item, index) => ({ item, index, score: recommendation.scoreByStatId.get(item.id) ?? 0 }))
+        .sort((left, right) => right.score - left.score || left.index - right.index)
+        .map(({ item }) => item);
+    });
+  }
+
+  return groups;
+}
+
+function maybeApplyPendingSmartDefault(select: HTMLSelectElement) {
+  if (!pendingSmartDefault) return;
+  if (performance.now() > pendingSmartDefault.expiresAt) {
+    pendingSmartDefault = null;
+    return;
+  }
+
+  const inspector = treeInspectorFor(select);
+  if (!inspector) return;
+  const nodeId = selectedTreeNodeId(inspector);
+  if (nodeId !== pendingSmartDefault.nodeId) return;
+
+  const selects = statSelectsInInspector(inspector);
+  const index = selects.indexOf(select);
+  if (selects.length <= pendingSmartDefault.previousCount || index < pendingSmartDefault.previousCount) return;
+
+  const metadata = readProjectMetadata();
+  const groups = buildSearchGroups(select, metadata);
+  const recommendation = recommendationForSelect(select, metadata, groups, true);
+  pendingSmartDefault = null;
+  const nextStatId = recommendation?.recommendedStatId;
+  if (!nextStatId || nextStatId === select.value) return;
+  if (!Array.from(select.options).some((option) => option.value === nextStatId && !option.disabled)) return;
+  nativeSetSelectValue(select, nextStatId);
 }
 
 function enhanceStatSelect(select: HTMLSelectElement) {
@@ -163,6 +371,7 @@ function enhanceStatSelect(select: HTMLSelectElement) {
   let searching = false;
   let activeIndex = -1;
   let flatOptions: SearchOption[] = [];
+  let selectAllOnPointerClick = false;
 
   const syncDisplay = () => {
     if (!searching) input.value = selectedDisplay(select);
@@ -203,6 +412,7 @@ function enhanceStatSelect(select: HTMLSelectElement) {
   };
 
   const choose = (item: SearchOption) => {
+    if (item.option.disabled) return;
     searching = false;
     nativeSetSelectValue(select, item.id);
     input.value = `${item.groupName} ${item.name}`.trim();
@@ -237,16 +447,17 @@ function enhanceStatSelect(select: HTMLSelectElement) {
           option.className = 'fuzzy-stat-option';
           option.setAttribute('role', 'option');
           option.dataset.statId = item.id;
+          option.disabled = item.option.disabled;
 
           const name = document.createElement('span');
           name.className = 'fuzzy-stat-option-name';
-          name.textContent = item.name;
+          name.textContent = item.option.disabled ? `${item.name} — already used` : item.name;
           option.append(name);
 
-          if (item.gameKey) {
+          if (item.key) {
             const key = document.createElement('span');
             key.className = 'fuzzy-stat-option-key';
-            key.textContent = item.gameKey;
+            key.textContent = item.key;
             option.append(key);
           }
 
@@ -280,6 +491,10 @@ function enhanceStatSelect(select: HTMLSelectElement) {
     }
   };
 
+  input.addEventListener('pointerdown', () => {
+    selectAllOnPointerClick = document.activeElement !== input || menu.hidden;
+  });
+
   input.addEventListener('focus', () => {
     searching = false;
     syncDisplay();
@@ -289,6 +504,10 @@ function enhanceStatSelect(select: HTMLSelectElement) {
 
   input.addEventListener('click', () => {
     if (menu.hidden) openMenu();
+    if (selectAllOnPointerClick) {
+      input.select();
+      selectAllOnPointerClick = false;
+    }
   });
 
   input.addEventListener('input', () => {
@@ -329,7 +548,7 @@ function enhanceStatSelect(select: HTMLSelectElement) {
     syncDisplay();
     if (!menu.hidden) renderMenu(searching ? input.value : '');
   });
-  selectObserver.observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ['label'] });
+  selectObserver.observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ['label', 'disabled'] });
 
   const reposition = () => positionMenu();
   window.addEventListener('resize', reposition);
@@ -345,11 +564,29 @@ function enhanceStatSelect(select: HTMLSelectElement) {
   });
   lifecycleObserver.observe(document.documentElement, { childList: true, subtree: true });
 
+  maybeApplyPendingSmartDefault(select);
   syncDisplay();
 }
 
 function enhanceAllStatSelects(root: ParentNode = document) {
   root.querySelectorAll<HTMLSelectElement>('label.field-label.compact > select').forEach(enhanceStatSelect);
+}
+
+function captureUpgradeAdd(event: MouseEvent) {
+  const target = event.target instanceof Element ? event.target.closest('button.small-button') : null;
+  if (!(target instanceof HTMLButtonElement) || target.disabled) return;
+  const section = target.closest('.inspector-section');
+  const inspector = target.closest('.tree-layout aside.inspector');
+  if (!section || !inspector) return;
+  const title = section.querySelector('.section-title-row h3')?.textContent?.trim();
+  if (title !== 'Upgrade stats') return;
+  const nodeId = selectedTreeNodeId(inspector);
+  if (!nodeId) return;
+  pendingSmartDefault = {
+    nodeId,
+    previousCount: statSelectsInInspector(inspector).length,
+    expiresAt: performance.now() + 1500,
+  };
 }
 
 const observer = new MutationObserver((mutations) => {
@@ -361,6 +598,8 @@ const observer = new MutationObserver((mutations) => {
     });
   });
 });
+
+document.addEventListener('click', captureUpgradeAdd, true);
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => enhanceAllStatSelects(), { once: true });
