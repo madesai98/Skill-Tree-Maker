@@ -29,53 +29,38 @@ jobs:
               assert text.count(import_old) == 1, 'PerksView import anchor changed'
               text = text.replace(import_old, import_new, 1)
 
-          add_old = """  const addUpgrade = () => {
-            if (!selectedNode || stats.length === 0) return;
-            const stat = stats.find((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id));
-            if (!stat) {
-              showNotice('Every toggle stat is already assigned to a skill.');
-              return;
-            }
-            const upgrade: UpgradeEffect = {
-              id: uid('upgrade'),
-              statId: stat.id,
-              operator: stat.type === 'number' ? 'add' : 'set',
-              value: stat.type === 'number' ? 1 : true,
-            };
-            updateSelectedNode({ upgrades: [...selectedNode.data.upgrades, upgrade] });
-          };
-          """
-          add_new = """  const addUpgrade = () => {
-            if (!selectedNode || stats.length === 0) return;
-            const eligibleStatIds = new Set(stats
-              .filter((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id))
-              .map((item) => item.id));
-            const recommendation = recommendUpgradeStat({
-              nodeId: selectedNode.id,
-              nodeName: selectedNode.data.name,
-              currentStatIds: selectedNode.data.upgrades.map((upgrade) => upgrade.statId),
-              stats,
-              nodes,
-              edges,
-              eligibleStatIds,
-            });
-            const stat = stats.find((item) => item.id === recommendation.recommendedStatId);
-            if (!stat) {
-              showNotice('Every toggle stat is already assigned to a skill.');
-              return;
-            }
-            const upgrade: UpgradeEffect = {
-              id: uid('upgrade'),
-              statId: stat.id,
-              operator: stat.type === 'number' ? 'add' : 'set',
-              value: stat.type === 'number' ? 1 : true,
-            };
-            updateSelectedNode({ upgrades: [...selectedNode.data.upgrades, upgrade] });
-          };
-          """
-          if add_new not in text:
-              assert text.count(add_old) == 1, 'addUpgrade anchor changed'
-              text = text.replace(add_old, add_new, 1)
+          add_new = "\n".join([
+              "  const addUpgrade = () => {",
+              "    if (!selectedNode || stats.length === 0) return;",
+              "    const eligibleStatIds = new Set(stats",
+              "      .filter((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id))",
+              "      .map((item) => item.id));",
+              "    const recommendation = recommendUpgradeStat({",
+              "      nodeId: selectedNode.id,",
+              "      nodeName: selectedNode.data.name,",
+              "      currentStatIds: selectedNode.data.upgrades.map((upgrade) => upgrade.statId),",
+              "      stats,",
+              "      nodes,",
+              "      edges,",
+              "      eligibleStatIds,",
+              "    });",
+              "    const stat = stats.find((item) => item.id === recommendation.recommendedStatId);",
+              "    if (!stat) {",
+              "      showNotice('Every toggle stat is already assigned to a skill.');",
+              "      return;",
+              "    }",
+              "    const upgrade: UpgradeEffect = {",
+              "      id: uid('upgrade'),",
+              "      statId: stat.id,",
+              "      operator: stat.type === 'number' ? 'add' : 'set',",
+              "      value: stat.type === 'number' ? 1 : true,",
+              "    };",
+              "    updateSelectedNode({ upgrades: [...selectedNode.data.upgrades, upgrade] });",
+              "  };",
+          ])
+          add_start = text.index('  const addUpgrade = () => {')
+          add_end = text.index('\n\n  const updateUpgrade =', add_start)
+          text = text[:add_start] + add_new + text[add_end:]
           app.write_text(text)
 
           search = Path('src/statSearchSelect.ts')
@@ -100,11 +85,10 @@ jobs:
           capture_end = text.index('\nconst observer = new MutationObserver', capture_start)
           text = text[:capture_start] + text[capture_end + 1:]
 
-          text = text.replace(
-              "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden;",
-              "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden !== false;",
-              1,
-          )
+          old_hidden = "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden;"
+          new_hidden = "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden !== false;"
+          assert text.count(old_hidden) == 1, 'hidden anchor changed'
+          text = text.replace(old_hidden, new_hidden, 1)
           text = text.replace('  maybeApplyPendingSmartDefault(select);\n', '', 1)
           text = text.replace("document.addEventListener('click', captureUpgradeAdd, true);\n\n", '', 1)
           search.write_text(text)
