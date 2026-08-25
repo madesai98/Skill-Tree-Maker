@@ -3,6 +3,7 @@ import './projectRuntime';
 import './webMcpBootstrap';
 import './webMcp';
 import './webMcpProjectTools';
+import './webMcpAppTools';
 import './webMcpLocalConnection';
 import './webMcpWindowsLauncherFix';
 import './webMcpEnvironmentSetup';
