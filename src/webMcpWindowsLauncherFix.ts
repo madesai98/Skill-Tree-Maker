@@ -104,16 +104,16 @@ function Find-NodeRuntime {
   if ($nodeCommand) {
     $nodeExe = $nodeCommand.Source
     $nodeRoot = Split-Path -Parent $nodeExe
-    $npxCli = Join-Path $nodeRoot 'node_modules\\npm\\bin\\npx-cli.js'
-    if (Test-Path $npxCli) {
-      return @($nodeExe, $npxCli)
+    $npxCmd = Join-Path $nodeRoot 'npx.cmd'
+    if (Test-Path $npxCmd) {
+      return @($nodeExe, $npxCmd)
     }
   }
 
   $localNode = Get-ChildItem -Path $NodeDir -Filter 'node.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-  $localNpxCli = Get-ChildItem -Path $NodeDir -Filter 'npx-cli.js' -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '[\\/]npm[\\/]bin[\\/]npx-cli\\.js$' } | Select-Object -First 1
-  if ($localNode -and $localNpxCli) {
-    return @($localNode.FullName, $localNpxCli.FullName)
+  $localNpx = Get-ChildItem -Path $NodeDir -Filter 'npx.cmd' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($localNode -and $localNpx) {
+    return @($localNode.FullName, $localNpx.FullName)
   }
   return $null
 }
@@ -134,27 +134,38 @@ if (-not $nodeRuntime) {
   Expand-Archive -Path $nodeZip -DestinationPath $NodeDir -Force
   Remove-Item -Force $nodeZip -ErrorAction SilentlyContinue
   $nodeRuntime = Find-NodeRuntime
-  if (-not $nodeRuntime) { Fail 'Portable Node.js installed, but node.exe and npm npx-cli.js could not be found.' }
+  if (-not $nodeRuntime) { Fail 'Portable Node.js installed, but node.exe and npx.cmd could not be found.' }
   Write-Step "Installed portable Node.js $nodeVersion."
 }
 
 $nodeExe = [string]$nodeRuntime[0]
-$npxCli = [string]$nodeRuntime[1]
-# tunnel-client parses the --mcp-command string itself and treats backslashes as
-# escapes, so use forward slashes in Windows paths and execute node.exe directly
-# instead of asking Go to spawn an npx.cmd shim.
-$nodeForMcp = $nodeExe.Replace('\\', '/')
-$npxCliForMcp = $npxCli.Replace('\\', '/')
-
+$nodeBin = Split-Path -Parent $nodeExe
+# The managed tunnel runtime inherits this environment. Putting the selected
+# Node.js directory first on PATH lets the MCP command use npx.cmd by name and
+# avoids embedding any Windows path containing spaces in the command string.
+$env:PATH = "$nodeBin;$env:PATH"
 $env:TUNNEL_RUNTIME_KEY = $RuntimeApiKey
-$relayCommand = '"' + $nodeForMcp + '" "' + $npxCliForMcp + '" -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+
+# tunnel-client parses the MCP command after it has been written to the managed
+# profile. Keep that command free of quoted Windows paths: cmd.exe is resolvable
+# from PATH and npx.cmd is resolvable from the Node.js directory prepended above.
+$relayCommand = 'cmd.exe /d /s /c npx.cmd -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+$mcpCommandArg = '--mcp-command=' + $relayCommand
 
 # Always stop the previous managed process before reconnecting so changes to the
 # MCP child command are actually applied instead of reusing an unhealthy runtime.
 & $tunnelExe runtimes stop $Alias *> $null
 
 Write-Step 'Starting or refreshing the managed Skill Tree Maker tunnel runtime...'
-$connectOutput = (& $tunnelExe runtimes connect --alias $Alias --tunnel-id $TunnelId --runtime-api-key 'env:TUNNEL_RUNTIME_KEY' --mcp-command $relayCommand --json 2>&1 | Out-String).Trim()
+$connectArgs = @(
+  'runtimes', 'connect',
+  '--alias', $Alias,
+  '--tunnel-id', $TunnelId,
+  '--runtime-api-key', 'env:TUNNEL_RUNTIME_KEY',
+  $mcpCommandArg,
+  '--json'
+)
+$connectOutput = (& $tunnelExe @connectArgs 2>&1 | Out-String).Trim()
 $connectExit = $LASTEXITCODE
 if ($connectOutput) { Write-Host $connectOutput }
 if ($connectExit -ne 0) {
