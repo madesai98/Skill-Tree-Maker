@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@mcp-b/global": "4.0.0",
+    "@mcp-b/global": "5.0.1",
     "@xyflow/react": "12.11.2",
     "@xyflow/system": "0.0.79",
     "firebase": "^12.17.1",
