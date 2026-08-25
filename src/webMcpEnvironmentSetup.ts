@@ -7,6 +7,7 @@ const CHATGPT_CONNECTORS_URL = 'https://chatgpt.com/#settings/Connectors';
 const SETTINGS_KEY = 'skill-tree:bridge-launch-setup:v1';
 const LEGACY_WEBMCP_SETTINGS_KEY = 'skill-tree:webmcp-settings:v2';
 const RELAY_VERSION = '5.0.1';
+const RELAY_PORT = '9333';
 const RELAY_INVOKE_TIMEOUT_MS = '125000';
 const BRIDGE_ALIAS = 'skill-tree-maker';
 const SUGGESTED_DIR_NAME = 'SkillTreeMakerBridge';
@@ -158,6 +159,7 @@ $Platform = ${psSingleQuote(platform)}
 $WidgetOrigin = ${psSingleQuote(origin)}
 $RelayVersion = ${psSingleQuote(RELAY_VERSION)}
 $RelayInvokeTimeout = ${psSingleQuote(RELAY_INVOKE_TIMEOUT_MS)}
+$RelayPort = ${psSingleQuote(RELAY_PORT)}
 $Alias = ${psSingleQuote(BRIDGE_ALIAS)}
 $ReleaseApi = ${psSingleQuote(RELEASE_API)}
 $Root = Split-Path -Parent $env:STM_SCRIPT_PATH
@@ -253,7 +255,7 @@ if (-not $npx) {
 }
 
 $env:TUNNEL_RUNTIME_KEY = $RuntimeApiKey
-$relayCommand = '"' + $npx + '" -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
+$relayCommand = '"' + $npx + '" -y @mcp-b/webmcp-local-relay@' + $RelayVersion + ' --port ' + $RelayPort + ' --widget-origin ' + $WidgetOrigin + ' --invoke-timeout ' + $RelayInvokeTimeout
 
 Write-Step 'Starting or refreshing the managed Skill Tree Maker tunnel runtime...'
 & $tunnelExe runtimes connect --alias $Alias --tunnel-id $TunnelId --runtime-api-key 'env:TUNNEL_RUNTIME_KEY' --mcp-command $relayCommand
@@ -265,7 +267,7 @@ Write-Step 'Checking runtime status...'
 if ($LASTEXITCODE -ne 0) { Fail "tunnel-client runtimes status failed with exit code $LASTEXITCODE." }
 
 Write-Host ''
-Write-Host 'Bridge startup completed. Keep the Skill Tree Maker browser tab open and enable the same tunnel in ChatGPT.' -ForegroundColor Green
+Write-Host 'Local bridge runtime is healthy. It can start before or after the Skill Tree Maker page; the page reconnects automatically when the relay is available.' -ForegroundColor Green
 `;
 }
 
@@ -287,6 +289,7 @@ RUNTIME_API_KEY=${shellSingleQuote(apiKey)}
 PLATFORM=${shellSingleQuote(platform)}
 WIDGET_ORIGIN=${shellSingleQuote(origin)}
 RELAY_VERSION=${shellSingleQuote(RELAY_VERSION)}
+RELAY_PORT=${shellSingleQuote(RELAY_PORT)}
 RELAY_INVOKE_TIMEOUT=${shellSingleQuote(RELAY_INVOKE_TIMEOUT_MS)}
 ALIAS=${shellSingleQuote(BRIDGE_ALIAS)}
 RELEASE_API=${shellSingleQuote(RELEASE_API)}
@@ -393,7 +396,7 @@ if [ -z "$NPX" ]; then
 fi
 
 export TUNNEL_RUNTIME_KEY="$RUNTIME_API_KEY"
-relay_command="\\\"$NPX\\\" -y @mcp-b/webmcp-local-relay@$RELAY_VERSION --widget-origin $WIDGET_ORIGIN --invoke-timeout $RELAY_INVOKE_TIMEOUT"
+relay_command="\\\"$NPX\\\" -y @mcp-b/webmcp-local-relay@$RELAY_VERSION --port $RELAY_PORT --widget-origin $WIDGET_ORIGIN --invoke-timeout $RELAY_INVOKE_TIMEOUT"
 
 step 'Starting or refreshing the managed Skill Tree Maker tunnel runtime...'
 "$TUNNEL_EXE" runtimes connect --alias "$ALIAS" --tunnel-id "$TUNNEL_ID" --runtime-api-key env:TUNNEL_RUNTIME_KEY --mcp-command "$relay_command"
@@ -402,7 +405,7 @@ sleep 2
 step 'Checking runtime status...'
 "$TUNNEL_EXE" runtimes status "$ALIAS" --json
 
-printf '\\n\\033[32mBridge startup completed. Keep the Skill Tree Maker browser tab open and enable the same tunnel in ChatGPT.\\033[0m\\n'
+printf '\\n\\033[32mLocal bridge runtime is healthy. It can start before or after the Skill Tree Maker page; the page reconnects automatically when the relay is available.\\033[0m\\n'
 `;
 }
 
