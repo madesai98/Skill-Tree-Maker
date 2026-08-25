@@ -140,6 +140,9 @@ if (-not $nodeRuntime) {
 
 $nodeExe = [string]$nodeRuntime[0]
 $npxCli = [string]$nodeRuntime[1]
+# tunnel-client parses the --mcp-command string itself and treats backslashes as
+# escapes, so use forward slashes in Windows paths and execute node.exe directly
+# instead of asking Go to spawn an npx.cmd shim.
 $nodeForMcp = $nodeExe.Replace('\\', '/')
 $npxCliForMcp = $npxCli.Replace('\\', '/')
 
