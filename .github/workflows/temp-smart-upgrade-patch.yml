@@ -1,0 +1,119 @@
+name: Temporary smart stat integration patch
+
+on:
+  push:
+    branches:
+      - smart-upgrade-stat-defaults
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: smart-upgrade-stat-defaults
+          fetch-depth: 0
+      - name: Apply integration patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('src/App.tsx')
+          text = app.read_text()
+          import_old = "import PerksView from './PerksView';\n"
+          import_new = import_old + "import { recommendUpgradeStat } from './statUpgradeRecommendation';\n"
+          if import_new not in text:
+              assert text.count(import_old) == 1, 'PerksView import anchor changed'
+              text = text.replace(import_old, import_new, 1)
+
+          add_old = """  const addUpgrade = () => {
+            if (!selectedNode || stats.length === 0) return;
+            const stat = stats.find((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id));
+            if (!stat) {
+              showNotice('Every toggle stat is already assigned to a skill.');
+              return;
+            }
+            const upgrade: UpgradeEffect = {
+              id: uid('upgrade'),
+              statId: stat.id,
+              operator: stat.type === 'number' ? 'add' : 'set',
+              value: stat.type === 'number' ? 1 : true,
+            };
+            updateSelectedNode({ upgrades: [...selectedNode.data.upgrades, upgrade] });
+          };
+          """
+          add_new = """  const addUpgrade = () => {
+            if (!selectedNode || stats.length === 0) return;
+            const eligibleStatIds = new Set(stats
+              .filter((item) => item.type === 'number' || !booleanStatUsedElsewhere(item.id))
+              .map((item) => item.id));
+            const recommendation = recommendUpgradeStat({
+              nodeId: selectedNode.id,
+              nodeName: selectedNode.data.name,
+              currentStatIds: selectedNode.data.upgrades.map((upgrade) => upgrade.statId),
+              stats,
+              nodes,
+              edges,
+              eligibleStatIds,
+            });
+            const stat = stats.find((item) => item.id === recommendation.recommendedStatId);
+            if (!stat) {
+              showNotice('Every toggle stat is already assigned to a skill.');
+              return;
+            }
+            const upgrade: UpgradeEffect = {
+              id: uid('upgrade'),
+              statId: stat.id,
+              operator: stat.type === 'number' ? 'add' : 'set',
+              value: stat.type === 'number' ? 1 : true,
+            };
+            updateSelectedNode({ upgrades: [...selectedNode.data.upgrades, upgrade] });
+          };
+          """
+          if add_new not in text:
+              assert text.count(add_old) == 1, 'addUpgrade anchor changed'
+              text = text.replace(add_old, add_new, 1)
+          app.write_text(text)
+
+          search = Path('src/statSearchSelect.ts')
+          text = search.read_text()
+          pending_type = """type PendingSmartDefault = {
+            nodeId: string;
+            previousCount: number;
+            expiresAt: number;
+          };
+
+          let pendingSmartDefault: PendingSmartDefault | null = null;
+
+          """
+          assert text.count(pending_type) == 1, 'pending type anchor changed'
+          text = text.replace(pending_type, '', 1)
+
+          pending_function_start = text.index('function maybeApplyPendingSmartDefault(select: HTMLSelectElement) {')
+          pending_function_end = text.index('\nfunction enhanceStatSelect(select: HTMLSelectElement) {', pending_function_start)
+          text = text[:pending_function_start] + text[pending_function_end + 1:]
+
+          capture_start = text.index('function captureUpgradeAdd(event: MouseEvent) {')
+          capture_end = text.index('\nconst observer = new MutationObserver', capture_start)
+          text = text[:capture_start] + text[capture_end + 1:]
+
+          text = text.replace(
+              "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden;",
+              "    selectAllOnPointerClick = document.activeElement !== input || menu.hidden !== false;",
+              1,
+          )
+          text = text.replace('  maybeApplyPendingSmartDefault(select);\n', '', 1)
+          text = text.replace("document.addEventListener('click', captureUpgradeAdd, true);\n\n", '', 1)
+          search.write_text(text)
+          PY
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/temp-smart-upgrade-patch.yml
+          git add src/App.tsx src/statSearchSelect.ts
+          git commit -m "Integrate smart upgrade stat defaults"
+          git push origin HEAD:smart-upgrade-stat-defaults
