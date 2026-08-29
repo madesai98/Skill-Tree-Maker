@@ -55,8 +55,8 @@ function persistEnabled() {
 }
 
 function escapeHtml(value: string) {
-  return value.replace(/[&<>'"]/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  return value.replace(/[&<>'\"]/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '\"': '&quot;',
   })[character]!);
 }
 
@@ -127,12 +127,10 @@ async function enableMcp() {
       const mcpWindow = window as McpWindow;
       mcpWindow.__webModelContextOptions = {
         autoInitialize: false,
-        nativeModelContextBehavior: 'preserve',
       };
 
       const runtime = await import('@mcp-b/global');
       runtime.initializeWebModelContext({
-        transport: { tabServer: false, iframeServer: false },
         installTestingShim: true,
       });
 
