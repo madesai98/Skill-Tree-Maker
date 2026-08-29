@@ -150,10 +150,12 @@ function enrichSchemaNode(value: unknown, propertyName: string | null, toolTitle
 
 function normalizeProjectProperty(schema: Record<string, unknown>) {
   if (!isRecord(schema.properties)) return schema;
-  const project = schema.properties.project;
+  let properties: Record<string, unknown> = schema.properties;
+
+  const project = properties.project;
   if (isRecord(project) && Object.keys(project).length === 0) {
-    schema.properties = {
-      ...schema.properties,
+    properties = {
+      ...properties,
       project: {
         title: 'Project',
         description: PARAMETER_DESCRIPTIONS.project,
@@ -164,10 +166,11 @@ function normalizeProjectProperty(schema: Record<string, unknown>) {
       },
     };
   }
-  const config = schema.properties.config;
+
+  const config = properties.config;
   if (isRecord(config) && Object.keys(config).length === 0) {
-    schema.properties = {
-      ...schema.properties,
+    properties = {
+      ...properties,
       config: {
         type: 'object',
         title: 'Firebase configuration',
@@ -176,6 +179,8 @@ function normalizeProjectProperty(schema: Record<string, unknown>) {
       },
     };
   }
+
+  schema.properties = properties;
   return schema;
 }
 
