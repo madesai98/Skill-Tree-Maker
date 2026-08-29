@@ -133,7 +133,6 @@ async function enableMcp() {
       const runtime = await import('@mcp-b/global');
       runtime.initializeWebModelContext({
         transport: { tabServer: false, iframeServer: false },
-        nativeModelContextBehavior: 'preserve',
         installTestingShim: true,
       });
 
