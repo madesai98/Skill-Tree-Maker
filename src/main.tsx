@@ -1,12 +1,9 @@
 import './history';
 import './projectRuntime';
-import './webMcpBootstrap';
-import './webMcp';
+import './webMcpConnection';
+import './webMcpCoreTools';
 import './webMcpProjectTools';
 import './webMcpAppTools';
-import './webMcpLocalConnection';
-import './webMcpWindowsLauncherFix';
-import './webMcpEnvironmentSetup';
 import './statKeySync';
 import './statSearchSelect';
 import { StrictMode } from 'react';
