@@ -4,6 +4,12 @@ import {
   installMcpSchemaNormalization,
   type BrowserModelContext,
 } from './webMcpSchema';
+import {
+  getBrowserRelayState,
+  startBrowserMcpRelay,
+  subscribeBrowserRelayState,
+  type BrowserRelayState,
+} from './webMcpRelayClient';
 
 const MCP_ENABLED_KEY = 'skill-tree:mcp-enabled:v1';
 const LEGACY_SETTINGS_KEYS = [
@@ -11,12 +17,7 @@ const LEGACY_SETTINGS_KEYS = [
   'skill-tree:webmcp-settings:v1',
   'skill-tree:local-mcp-settings:v1',
 ];
-const RELAY_VERSION = '5.0.1';
-const RELAY_PORT = '9333';
-const RELAY_REQUEST_TIMEOUT_MS = '120000';
 const RELAY_INVOKE_TIMEOUT_MS = '125000';
-const RELAY_EMBED_ID = 'skill-tree-mcp-relay-embed';
-const RELAY_EMBED_URL = `https://cdn.jsdelivr.net/npm/@mcp-b/webmcp-local-relay@${RELAY_VERSION}/dist/browser/embed.js`;
 const MCP_READY_EVENT = 'skill-tree:mcp-ready';
 
 type ConnectionState = 'off' | 'enabling' | 'enabled' | 'error';
@@ -31,6 +32,7 @@ let connectionState: ConnectionState = readEnabledPreference() ? 'enabling' : 'o
 let connectionError: string | null = null;
 let toolCount = 0;
 let enablePromise: Promise<void> | null = null;
+let relayState: BrowserRelayState = getBrowserRelayState();
 
 function readEnabledPreference() {
   const saved = localStorage.getItem(MCP_ENABLED_KEY);
@@ -79,29 +81,6 @@ async function copyText(value: string) {
   }
 }
 
-function loadRelayAdapter() {
-  const existing = document.getElementById(RELAY_EMBED_ID) as HTMLScriptElement | null;
-  if (existing?.dataset.loaded === 'true') return Promise.resolve();
-  if (existing) existing.remove();
-
-  return new Promise<void>((resolve, reject) => {
-    const script = document.createElement('script');
-    script.id = RELAY_EMBED_ID;
-    script.src = RELAY_EMBED_URL;
-    script.async = true;
-    script.dataset.relayPort = RELAY_PORT;
-    script.dataset.requestTimeout = RELAY_REQUEST_TIMEOUT_MS;
-    script.addEventListener('load', () => {
-      script.dataset.loaded = 'true';
-      resolve();
-    }, { once: true });
-    script.addEventListener('error', () => {
-      reject(new Error('The browser MCP relay adapter could not be loaded. Check the network or content-blocking settings and retry.'));
-    }, { once: true });
-    document.head.appendChild(script);
-  });
-}
-
 async function refreshToolCount() {
   const context = (document as WebMcpDocument).modelContext;
   if (!context?.getTools) return;
@@ -136,9 +115,9 @@ async function enableMcp() {
 
       const context = (document as WebMcpDocument).modelContext;
       if (!context?.registerTool) throw new Error('The browser MCP runtime loaded, but document.modelContext is unavailable.');
-      installMcpSchemaNormalization(context);
-      await loadRelayAdapter();
 
+      installMcpSchemaNormalization(context);
+      startBrowserMcpRelay(context);
       persistEnabled();
       connectionState = 'enabled';
       window.dispatchEvent(new CustomEvent(MCP_READY_EVENT, {
@@ -146,6 +125,7 @@ async function enableMcp() {
       }));
       window.setTimeout(() => void refreshToolCount(), 0);
       window.setTimeout(() => void refreshToolCount(), 500);
+      window.setTimeout(() => void refreshToolCount(), 1500);
     } catch (error) {
       connectionState = 'error';
       connectionError = error instanceof Error ? error.message : 'MCP initialization failed.';
@@ -158,6 +138,16 @@ async function enableMcp() {
   return enablePromise;
 }
 
+function relayStatusText() {
+  if (relayState.phase === 'connected') {
+    return `Connected · ${relayState.publishedToolCount} Skill Tree Maker tools published`;
+  }
+  if (relayState.phase === 'rejected') return 'Bridge rejected this page';
+  if (relayState.phase === 'connecting') return 'Connecting…';
+  if (relayState.phase === 'waiting') return 'Waiting for bridge command';
+  return 'Not started';
+}
+
 function renderPanel(panel: HTMLElement) {
   panel.hidden = !panelOpen;
   const enabled = connectionState === 'enabled';
@@ -166,8 +156,9 @@ function renderPanel(panel: HTMLElement) {
     : connectionState === 'enabling'
       ? 'Enabling…'
       : connectionState === 'enabled'
-        ? toolCount > 0 ? `Enabled · ${toolCount} tools` : 'Enabled'
+        ? toolCount > 0 ? `Enabled · ${toolCount} browser tools` : 'Enabled'
         : 'Setup error';
+  const relayConnected = relayState.phase === 'connected';
 
   panel.innerHTML = `
     <div class="webmcp-head">
@@ -177,7 +168,7 @@ function renderPanel(panel: HTMLElement) {
     <div class="webmcp-section">
       <div class="webmcp-section-title">
         <strong>1. Enable MCP</strong>
-        <small>Loads the browser WebMCP runtime, compatibility polyfills, Skill Tree Maker tools, and the loopback relay adapter.</small>
+        <small>Loads the browser WebMCP runtime and compatibility polyfills, registers Skill Tree Maker tools, and starts the direct loopback publisher.</small>
       </div>
       <div class="webmcp-actions">
         <button type="button" class="bridge-primary-action" data-mcp-action="enable" ${connectionState === 'enabling' ? 'disabled' : ''}>
@@ -190,13 +181,14 @@ function renderPanel(panel: HTMLElement) {
     <div class="webmcp-section">
       <div class="webmcp-section-title">
         <strong>2. Run the bridge</strong>
-        <small>${enabled ? 'Run this command on the same computer, then keep this Skill Tree Maker tab open.' : 'Enable MCP first; then run the bridge command shown here.'}</small>
+        <small>${relayConnected ? 'The bridge is connected and the page tools have been published.' : enabled ? 'Run this command on the same computer. This page retries the loopback connection automatically.' : 'Enable MCP first; then run the bridge command shown here.'}</small>
       </div>
       <div class="webmcp-command${enabled ? '' : ' is-disabled'}">
         <code>${escapeHtml(bridgeCommand())}</code>
         <button type="button" data-mcp-action="copy-command" ${enabled ? '' : 'disabled'}>Copy</button>
       </div>
-      <small class="webmcp-note">The bridge is an ordinary MCP stdio server. It binds only to loopback for the browser side and is restricted to <code>${escapeHtml(window.location.origin)}</code>. Chrome may request Local Network Access the first time this site connects to localhost.</small>
+      <small class="webmcp-note">Bridge: <strong>${escapeHtml(relayStatusText())}</strong>. ${escapeHtml(relayState.detail)} The browser connects directly to <code>127.0.0.1:9333</code>; Chrome may request Local Network Access the first time.</small>
+      ${relayState.phase === 'rejected' ? `<div class="webmcp-error">${escapeHtml(relayState.detail)}</div>` : ''}
     </div>`;
 }
 
@@ -205,10 +197,17 @@ function renderUi() {
   const panel = document.querySelector<HTMLElement>('.webmcp-panel');
   if (trigger) {
     const enabled = connectionState === 'enabled';
-    trigger.classList.toggle('is-ready', enabled);
+    const ready = enabled && relayState.phase === 'connected' && relayState.publishedToolCount > 0;
+    trigger.classList.toggle('is-ready', ready);
     trigger.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
     const status = trigger.querySelector<HTMLElement>('.webmcp-button-status');
-    if (status) status.textContent = enabled ? 'Enabled' : connectionState === 'enabling' ? 'Loading' : connectionState === 'error' ? 'Error' : 'Off';
+    if (status) {
+      status.textContent = ready
+        ? `${relayState.publishedToolCount} tools`
+        : enabled
+          ? relayState.phase === 'connecting' ? 'Connecting' : 'Waiting'
+          : connectionState === 'enabling' ? 'Loading' : connectionState === 'error' ? 'Error' : 'Off';
+    }
   }
   if (panel) renderPanel(panel);
 }
@@ -254,6 +253,11 @@ function installUi() {
   renderUi();
   return true;
 }
+
+subscribeBrowserRelayState((next) => {
+  relayState = next;
+  renderUi();
+});
 
 if (!installUi()) {
   const observer = new MutationObserver(() => {
