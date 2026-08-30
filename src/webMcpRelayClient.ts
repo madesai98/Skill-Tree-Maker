@@ -14,12 +14,22 @@ const TAB_ID_KEY = 'skill-tree:mcp-relay-tab-id:v1';
 const INVOKE_TIMEOUT_MS = 120_000;
 const HANDSHAKE_TIMEOUT_MS = 4_000;
 const TOOL_POLL_INTERVAL_MS = 1_000;
+const INITIAL_TOOLS_WAIT_MS = 2_500;
+const INITIAL_TOOLS_POLL_MS = 50;
 const RETRY_DELAYS_MS = [250, 250, 500, 500, 1_000, 1_000, 2_000, 5_000, 10_000];
 
 type JsonRecord = Record<string, unknown>;
 type RelayPhase = 'idle' | 'waiting' | 'connecting' | 'connected' | 'rejected';
+type RegisteredToolDescriptor = {
+  name?: string;
+  title?: string;
+  description?: string;
+  inputSchema?: unknown;
+  annotations?: unknown;
+};
 type ExecutableModelContext = BrowserModelContext & EventTarget & {
-  executeTool?: (tool: { name?: string }, serializedArgs: string) => Promise<unknown>;
+  getTools?: () => Promise<RegisteredToolDescriptor[]>;
+  executeTool?: (tool: RegisteredToolDescriptor, serializedArgs: string) => Promise<unknown>;
 };
 
 type RelayToolDescriptor = {
@@ -49,6 +59,7 @@ let socketGeneration = 0;
 let retryTimer: number | null = null;
 let handshakeTimer: number | null = null;
 let toolPollTimer: number | null = null;
+let initialConnectTimer: number | null = null;
 let retryIndex = 0;
 let lastToolsSnapshot = '';
 let toolChangeContext: ExecutableModelContext | null = null;
@@ -119,6 +130,7 @@ function installToolCapture(target: BrowserModelContext) {
     if (options?.signal) {
       options.signal.addEventListener('abort', () => registry.delete(normalized.name), { once: true });
     }
+    void publishTools(false);
   };
 
   Object.defineProperty(target, 'registerTool', {
@@ -145,7 +157,7 @@ async function readRelayTools(): Promise<RelayToolDescriptor[]> {
   if (!context.getTools) return [];
   const tools = await context.getTools();
   return tools
-    .filter((tool): tool is { name: string; title?: string; description?: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> } =>
+    .filter((tool): tool is RegisteredToolDescriptor & { name: string } =>
       typeof tool.name === 'string' && Boolean(tool.name))
     .map((tool) => ({
       name: tool.name,
@@ -178,7 +190,7 @@ function normalizeToolResult(value: unknown): McpToolResponse {
     };
   }
 
-  let parsed = value;
+  let parsed: unknown = value;
   if (typeof value === 'string') {
     try {
       parsed = JSON.parse(value) as unknown;
@@ -266,6 +278,12 @@ function clearHandshakeTimer() {
   handshakeTimer = null;
 }
 
+function clearInitialConnectTimer() {
+  if (initialConnectTimer === null) return;
+  window.clearTimeout(initialConnectTimer);
+  initialConnectTimer = null;
+}
+
 function retryDelay() {
   return RETRY_DELAYS_MS[Math.min(retryIndex, RETRY_DELAYS_MS.length - 1)];
 }
@@ -296,6 +314,7 @@ function failSocket(target: WebSocket, generation: number, detail: string) {
 function connectNow() {
   if (!enabled || socket || state.phase === 'rejected') return;
   clearRetryTimer();
+  clearInitialConnectTimer();
   const generation = ++socketGeneration;
   patchState({
     phase: 'connecting',
@@ -421,19 +440,40 @@ function connectNow() {
   }, { once: true });
 }
 
+async function connectAfterInitialTools() {
+  const startedAt = Date.now();
+  patchState({ phase: 'waiting', detail: 'Waiting for Skill Tree Maker tools to finish registering…' });
+  while (enabled && !socket && state.phase !== 'rejected') {
+    const tools = await readRelayTools();
+    const count = tools.filter((tool) => tool.name.startsWith('skill_tree_')).length;
+    patchState({ publishedToolCount: count });
+    if (count > 0 || Date.now() - startedAt >= INITIAL_TOOLS_WAIT_MS) {
+      connectNow();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      initialConnectTimer = window.setTimeout(() => {
+        initialConnectTimer = null;
+        resolve();
+      }, INITIAL_TOOLS_POLL_MS);
+    });
+  }
+}
+
 export function startBrowserMcpRelay(target: BrowserModelContext) {
   context = target as ExecutableModelContext;
   enabled = true;
   installToolCapture(target);
   subscribeToToolChanges(context);
   void publishTools(false);
-  connectNow();
+  void connectAfterInitialTools();
 }
 
 export function stopBrowserMcpRelay() {
   enabled = false;
   clearRetryTimer();
   clearHandshakeTimer();
+  clearInitialConnectTimer();
   retryIndex = 0;
   const active = socket;
   socket = null;
