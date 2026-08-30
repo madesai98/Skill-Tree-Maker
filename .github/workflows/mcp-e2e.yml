@@ -1,0 +1,65 @@
+name: Validate MCP relay
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/webMcp*.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/scripts/mcp-relay-e2e.mjs'
+      - '.github/workflows/mcp-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install project dependencies
+        run: npm install
+
+      - name: Install MCP E2E dependencies
+        run: npm install --no-save @modelcontextprotocol/client playwright
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Production build
+        run: npm run build
+
+      - name: Start production preview
+        shell: bash
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/skill-tree-preview.log 2>&1 &
+          echo $! > /tmp/skill-tree-preview.pid
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4173/Skill-Tree-Maker/ > /dev/null; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat /tmp/skill-tree-preview.log
+          exit 1
+
+      - name: Browser-to-relay MCP E2E
+        run: node .github/scripts/mcp-relay-e2e.mjs
+
+      - name: Stop production preview
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/skill-tree-preview.pid ]; then
+            kill "$(cat /tmp/skill-tree-preview.pid)" 2>/dev/null || true
+          fi
