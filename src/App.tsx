@@ -777,7 +777,7 @@ function SkillNode({ id, selected }: NodeProps<SkillFlowNode>) {
 const nodeTypes = { skill: SkillNode };
 const edgeTypes = { skillLink: SkillLinkEdgeComponent };
 
-function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'perks' | 'playtest' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' }) {
+function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree' | 'perks' | 'playtest' | 'stats' | 'close' | 'link' | 'currency' | 'icons' | 'nodeName' | 'nodeStats' | 'chevron' | 'grip' }) {
   const paths: Record<string, ReactElement> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" />,
@@ -793,6 +793,8 @@ function Icon({ name }: { name: 'plus' | 'trash' | 'download' | 'upload' | 'tree
     link: <path d="M9 15l6-6m-8.5 8.5-1 1a3.54 3.54 0 0 1-5-5l3-3a3.54 3.54 0 0 1 5 0m7-1a3.54 3.54 0 0 1 5 5l-3 3a3.54 3.54 0 0 1-5 0" />,
     nodeName: <><path d="M5 6h14M12 6v12M8.5 18h7" /><path d="M7 9V6m10 3V6" /></>,
     nodeStats: <><path d="M4 6h7m4 0h5M4 12h3m4 0h9M4 18h9m4 0h3" /><path d="M13 4v4M9 10v4M15 16v4" /></>,
+    chevron: <path d="m7 9 5 5 5-5" />,
+    grip: <><circle cx="8" cy="7" r="1" /><circle cx="8" cy="12" r="1" /><circle cx="8" cy="17" r="1" /><circle cx="16" cy="7" r="1" /><circle cx="16" cy="12" r="1" /><circle cx="16" cy="17" r="1" /></>,
   };
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -941,6 +943,9 @@ function SkillTreeEditor() {
   const suppressContextMenuUntilRef = useRef(0);
   const clipboardRef = useRef<ClipboardSnapshot | null>(null);
   const pasteCountRef = useRef(0);
+  const [collapsedStatGroupIds, setCollapsedStatGroupIds] = useState<Set<string>>(() => new Set());
+  const [draggedStatGroupId, setDraggedStatGroupId] = useState<string | null>(null);
+  const [statGroupDropTarget, setStatGroupDropTarget] = useState<{ groupId: string; placement: 'before' | 'after' } | null>(null);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const isPlaytest = activeView === 'playtest';
@@ -956,6 +961,16 @@ function SkillTreeEditor() {
     });
     return [...groups.values()];
   }, [stats]);
+
+  useEffect(() => {
+    const validGroupIds = new Set(statGroups.map((group) => group.id));
+    setCollapsedStatGroupIds((current) => {
+      const next = new Set([...current].filter((groupId) => validGroupIds.has(groupId)));
+      return next.size === current.size ? current : next;
+    });
+    setDraggedStatGroupId((current) => current && !validGroupIds.has(current) ? null : current);
+    setStatGroupDropTarget((current) => current && !validGroupIds.has(current.groupId) ? null : current);
+  }, [statGroups]);
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
@@ -1559,6 +1574,38 @@ function SkillTreeEditor() {
           key: composeStatKey(groupKey, statLocalKey(stat)),
         })),
       ];
+    });
+  };
+
+  const toggleStatGroupCollapsed = (groupId: string) => {
+    setCollapsedStatGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const reorderStatGroup = (sourceGroupId: string, targetGroupId: string, placement: 'before' | 'after') => {
+    if (sourceGroupId === targetGroupId) return;
+    setStats((current) => {
+      const groupOrder: string[] = [];
+      const groupedStats = new Map<string, StatDefinition[]>();
+      current.forEach((stat) => {
+        if (!groupedStats.has(stat.groupId)) {
+          groupedStats.set(stat.groupId, []);
+          groupOrder.push(stat.groupId);
+        }
+        groupedStats.get(stat.groupId)!.push(stat);
+      });
+
+      if (!groupedStats.has(sourceGroupId) || !groupedStats.has(targetGroupId)) return current;
+      const nextGroupOrder = groupOrder.filter((groupId) => groupId !== sourceGroupId);
+      const targetIndex = nextGroupOrder.indexOf(targetGroupId);
+      const insertIndex = placement === 'after' ? targetIndex + 1 : targetIndex;
+      nextGroupOrder.splice(insertIndex, 0, sourceGroupId);
+      if (nextGroupOrder.every((groupId, index) => groupId === groupOrder[index])) return current;
+      return nextGroupOrder.flatMap((groupId) => groupedStats.get(groupId) ?? []);
     });
   };
 
@@ -2332,8 +2379,77 @@ effects: node.data.upgrades.flatMap((upgrade) => {
             </div>
           ) : (
             <div className="stat-group-list">
-              {statGroups.map((group) => (
-                <section className="stat-group-card" key={group.id}>
+              {statGroups.map((group) => {
+                const collapsed = collapsedStatGroupIds.has(group.id);
+                const dropPlacement = statGroupDropTarget?.groupId === group.id ? statGroupDropTarget.placement : null;
+                return (
+                <section
+                  className={`stat-group-card${collapsed ? ' is-collapsed' : ''}${draggedStatGroupId === group.id ? ' is-dragging' : ''}${dropPlacement ? ` is-drop-${dropPlacement}` : ''}`}
+                  key={group.id}
+                  onDragOver={(event) => {
+                    if (!draggedStatGroupId || draggedStatGroupId === group.id) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+                    setStatGroupDropTarget({ groupId: group.id, placement });
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const sourceGroupId = draggedStatGroupId ?? event.dataTransfer.getData('text/plain');
+                    if (sourceGroupId && sourceGroupId !== group.id && dropPlacement) {
+                      reorderStatGroup(sourceGroupId, group.id, dropPlacement);
+                    }
+                    setDraggedStatGroupId(null);
+                    setStatGroupDropTarget(null);
+                  }}
+                >
+                  <div className="stat-group-toolbar">
+                    <button
+                      type="button"
+                      className="stat-group-drag-handle"
+                      draggable
+                      aria-label={`Reorder ${group.name} group`}
+                      title="Drag to reorder group. Arrow keys also work."
+                      onDragStart={(event) => {
+                        setDraggedStatGroupId(group.id);
+                        setStatGroupDropTarget(null);
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', group.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedStatGroupId(null);
+                        setStatGroupDropTarget(null);
+                      }}
+                      onKeyDown={(event) => {
+                        const groupIndex = statGroups.findIndex((item) => item.id === group.id);
+                        if (event.key === 'ArrowUp' && groupIndex > 0) {
+                          event.preventDefault();
+                          reorderStatGroup(group.id, statGroups[groupIndex - 1].id, 'before');
+                        } else if (event.key === 'ArrowDown' && groupIndex >= 0 && groupIndex < statGroups.length - 1) {
+                          event.preventDefault();
+                          reorderStatGroup(group.id, statGroups[groupIndex + 1].id, 'after');
+                        }
+                      }}
+                    >
+                      <Icon name="grip" />
+                    </button>
+                    <button
+                      type="button"
+                      className="stat-group-collapse"
+                      onClick={() => toggleStatGroupCollapsed(group.id)}
+                      aria-expanded={!collapsed}
+                      aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group.name} group`}
+                    >
+                      <Icon name="chevron" />
+                    </button>
+                    <div className="stat-group-summary">
+                      <strong>{group.name}</strong>
+                      <span>{group.stats.length} stat{group.stats.length === 1 ? '' : 's'} · {group.key}</span>
+                    </div>
+                  </div>
+                  {!collapsed && (
+                    <>
                   <div className="stat-group-head">
                     <div className="stat-group-fields with-appearance">
                       <label>
@@ -2423,8 +2539,11 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                       );
                     })}
                   </div>
+                    </>
+                  )}
                 </section>
-              ))}
+                );
+              })}
             </div>
           )}
 
