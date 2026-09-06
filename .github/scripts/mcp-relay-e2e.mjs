@@ -7,21 +7,36 @@ const pageUrl = `${pageOrigin}/Skill-Tree-Maker/`;
 const relayPackage = '@mcp-b/webmcp-local-relay@5.0.1';
 const expectedTool = 'skill_tree_list_stat_groups';
 const timeoutMs = 30_000;
+const toolSettleMs = 3_000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForTools(client) {
+async function listSkillTreeToolNames(client) {
+  const list = await client.listTools();
+  return list.tools
+    .filter((tool) => tool.name.startsWith('skill_tree_'))
+    .map((tool) => tool.name)
+    .sort();
+}
+
+async function waitForStableSkillTreeTools(client) {
   const startedAt = Date.now();
   let lastNames = [];
+  let stableSince = 0;
   while (Date.now() - startedAt < timeoutMs) {
-    const list = await client.listTools();
-    lastNames = list.tools.map((tool) => tool.name).sort();
-    if (lastNames.includes(expectedTool)) return list.tools;
+    const names = await listSkillTreeToolNames(client);
+    const same = JSON.stringify(names) === JSON.stringify(lastNames);
+    if (!same) {
+      lastNames = names;
+      stableSince = Date.now();
+    } else if (names.length >= 10 && names.includes(expectedTool) && Date.now() - stableSince >= toolSettleMs) {
+      return names;
+    }
     await delay(250);
   }
-  throw new Error(`Timed out waiting for ${expectedTool}. Visible MCP tools: ${lastNames.join(', ') || '(none)'}`);
+  throw new Error(`Timed out waiting for the Skill Tree Maker tool suite to stabilize. Visible MCP tools: ${lastNames.join(', ') || '(none)'}`);
 }
 
 async function enableMcp(page) {
@@ -38,12 +53,8 @@ async function waitForSingleProviderTools(client, expectedNames) {
   const startedAt = Date.now();
   let lastNames = [];
   while (Date.now() - startedAt < timeoutMs) {
-    const list = await client.listTools();
-    lastNames = list.tools
-      .filter((tool) => tool.name.startsWith('skill_tree_'))
-      .map((tool) => tool.name)
-      .sort();
-    if (JSON.stringify(lastNames) === JSON.stringify(expectedNames)) return list.tools;
+    lastNames = await listSkillTreeToolNames(client);
+    if (JSON.stringify(lastNames) === JSON.stringify(expectedNames)) return client.listTools();
     await delay(250);
   }
   throw new Error(`Skill Tree Maker tools did not settle to one provider. Expected ${expectedNames.join(', ')}, got ${lastNames.join(', ') || '(none)'}`);
@@ -83,12 +94,7 @@ try {
     { timeout: timeoutMs },
   );
 
-  const tools = await waitForTools(client);
-  const dynamicTools = tools.filter((tool) => tool.name.startsWith('skill_tree_'));
-  if (dynamicTools.length < 10) {
-    throw new Error(`Expected the Skill Tree Maker tool suite, found only ${dynamicTools.length}: ${dynamicTools.map((tool) => tool.name).join(', ')}`);
-  }
-  const expectedDynamicNames = dynamicTools.map((tool) => tool.name).sort();
+  const expectedDynamicNames = await waitForStableSkillTreeTools(client);
 
   const secondPage = await browserContext.newPage();
   secondPage.on('pageerror', (error) => pageErrors.push(`tab 2: ${error.message}`));
@@ -108,6 +114,8 @@ try {
   await waitForSingleProviderTools(client, expectedDynamicNames);
 
   await page.bringToFront();
+  await page.locator('.webmcp-button').click();
+  await page.locator('[data-mcp-action="close"]').click();
   await page.waitForFunction(
     () => document.querySelector('.webmcp-button-status')?.textContent?.includes('tools'),
     undefined,
@@ -120,7 +128,7 @@ try {
   );
   const singleProviderTools = await waitForSingleProviderTools(client, expectedDynamicNames);
 
-  const contextTool = singleProviderTools.find((tool) => tool.name === expectedTool);
+  const contextTool = singleProviderTools.tools.find((tool) => tool.name === expectedTool);
   if (!contextTool?.inputSchema || contextTool.inputSchema.type !== 'object') {
     throw new Error(`${expectedTool} does not expose an object input schema.`);
   }
@@ -140,7 +148,7 @@ try {
     throw new Error(`Browser page errors during MCP E2E: ${pageErrors.join(' | ')}`);
   }
 
-  console.log(`MCP E2E passed with ${dynamicTools.length} Skill Tree Maker tools, one active publisher across two tabs, focus handoff, and successful ${expectedTool} invocation.`);
+  console.log(`MCP E2E passed with ${expectedDynamicNames.length} Skill Tree Maker tools, one active publisher across two tabs, focus/interaction handoff, and successful ${expectedTool} invocation.`);
 } finally {
   await browserContext?.close().catch(() => undefined);
   await browser?.close();
