@@ -266,8 +266,12 @@ function installCoordinator() {
     if (document.visibilityState === 'visible' && document.hasFocus()) publishPreference();
   });
   window.addEventListener('pagehide', () => {
-    enabled = false;
-    releaseLeadership('This tab is closing.');
+    releaseLeadership('This tab is no longer the active page.');
+  });
+  window.addEventListener('pageshow', () => {
+    if (!enabled || !targetContext) return;
+    if (document.hasFocus()) publishPreference();
+    else requestLeadership(false);
   });
 
   retryTimer = window.setInterval(coordinationTick, RETRY_INTERVAL_MS);
@@ -288,10 +292,6 @@ export function stopCoordinatedBrowserMcpRelay() {
   targetContext = null;
   preferredInstanceId = null;
   preferredUntil = 0;
-  if (retryTimer !== null) {
-    window.clearInterval(retryTimer);
-    retryTimer = null;
-  }
   setState('idle', 'MCP relay coordination is idle.');
 }
 
