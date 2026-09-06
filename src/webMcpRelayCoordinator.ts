@@ -143,9 +143,9 @@ function applyPreference(message: CoordinatorMessage) {
   preferredInstanceId = message.instanceId;
   preferredUntil = Math.max(preferredUntil, message.at + PREFERENCE_WINDOW_MS);
   if (state.phase === 'active') {
-    releaseLeadership('A different focused Skill Tree Maker tab is now publishing MCP tools.');
+    releaseLeadership('A different active Skill Tree Maker tab is now publishing MCP tools.');
   } else {
-    setState('standby', 'Another focused Skill Tree Maker tab is publishing MCP tools.');
+    setState('standby', 'Another active Skill Tree Maker tab is publishing MCP tools.');
   }
 }
 
@@ -165,6 +165,11 @@ function publishPreference() {
     // Web Locks still prevent duplicate publishers when storage is unavailable.
   }
   requestLeadership(true);
+}
+
+function preferThisTabOnInteraction() {
+  if (!enabled || state.phase === 'active') return;
+  publishPreference();
 }
 
 function requestWebLock() {
@@ -262,6 +267,9 @@ function installCoordinator() {
   });
 
   window.addEventListener('focus', publishPreference);
+  document.addEventListener('focusin', preferThisTabOnInteraction, true);
+  document.addEventListener('pointerdown', preferThisTabOnInteraction, true);
+  document.addEventListener('keydown', preferThisTabOnInteraction, true);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && document.hasFocus()) publishPreference();
   });
