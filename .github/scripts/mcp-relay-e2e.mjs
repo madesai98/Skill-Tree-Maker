@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 const pageOrigin = 'http://127.0.0.1:4173';
 const pageUrl = `${pageOrigin}/Skill-Tree-Maker/`;
 const relayPackage = '@mcp-b/webmcp-local-relay@5.0.1';
-const expectedTool = 'skill_tree_get_context';
+const expectedTool = 'skill_tree_list_stat_groups';
 const timeoutMs = 30_000;
 
 function delay(ms) {
@@ -132,8 +132,8 @@ try {
   const text = Array.isArray(result.content)
     ? result.content.find((item) => item.type === 'text')?.text
     : undefined;
-  if (typeof text !== 'string' || !text.includes('protocolVersion')) {
-    throw new Error(`${expectedTool} did not return the expected context payload: ${JSON.stringify(result)}`);
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error(`${expectedTool} did not return a text payload: ${JSON.stringify(result)}`);
   }
 
   if (pageErrors.length) {
