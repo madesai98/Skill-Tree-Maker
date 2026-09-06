@@ -6,10 +6,15 @@ import {
 } from './webMcpSchema';
 import {
   getBrowserRelayState,
-  startBrowserMcpRelay,
   subscribeBrowserRelayState,
   type BrowserRelayState,
 } from './webMcpRelayClient';
+import {
+  getBrowserRelayOwnershipState,
+  startCoordinatedBrowserMcpRelay,
+  subscribeBrowserRelayOwnershipState,
+  type BrowserRelayOwnershipState,
+} from './webMcpRelayCoordinator';
 
 const MCP_ENABLED_KEY = 'skill-tree:mcp-enabled:v1';
 const LEGACY_SETTINGS_KEYS = [
@@ -33,6 +38,7 @@ let connectionError: string | null = null;
 let toolCount = 0;
 let enablePromise: Promise<void> | null = null;
 let relayState: BrowserRelayState = getBrowserRelayState();
+let relayOwnershipState: BrowserRelayOwnershipState = getBrowserRelayOwnershipState();
 
 function readEnabledPreference() {
   const saved = localStorage.getItem(MCP_ENABLED_KEY);
@@ -71,7 +77,6 @@ async function copyText(value: string) {
     await navigator.clipboard.writeText(value);
   } catch {
     const textarea = document.createElement('textarea');
-    textarea.value = value;
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     document.body.append(textarea);
@@ -117,7 +122,7 @@ async function enableMcp() {
       if (!context?.registerTool) throw new Error('The browser MCP runtime loaded, but document.modelContext is unavailable.');
 
       installMcpSchemaNormalization(context);
-      startBrowserMcpRelay(context);
+      startCoordinatedBrowserMcpRelay(context);
       persistEnabled();
       connectionState = 'enabled';
       window.dispatchEvent(new CustomEvent(MCP_READY_EVENT, {
@@ -139,6 +144,7 @@ async function enableMcp() {
 }
 
 function relayStatusText() {
+  if (relayOwnershipState.phase === 'standby') return 'Standby · another tab is active';
   if (relayState.phase === 'connected') {
     return `Connected · ${relayState.publishedToolCount} Skill Tree Maker tools published`;
   }
@@ -158,7 +164,8 @@ function renderPanel(panel: HTMLElement) {
       : connectionState === 'enabled'
         ? toolCount > 0 ? `Enabled · ${toolCount} browser tools` : 'Enabled'
         : 'Setup error';
-  const relayConnected = relayState.phase === 'connected';
+  const relayConnected = relayOwnershipState.phase === 'active' && relayState.phase === 'connected';
+  const relayDetail = relayOwnershipState.phase === 'standby' ? relayOwnershipState.detail : relayState.detail;
 
   panel.innerHTML = `
     <div class="webmcp-head">
@@ -181,13 +188,13 @@ function renderPanel(panel: HTMLElement) {
     <div class="webmcp-section">
       <div class="webmcp-section-title">
         <strong>2. Run the bridge</strong>
-        <small>${relayConnected ? 'The bridge is connected and the page tools have been published.' : enabled ? 'Run this command on the same computer. This page retries the loopback connection automatically.' : 'Enable MCP first; then run the bridge command shown here.'}</small>
+        <small>${relayConnected ? 'The bridge is connected and the page tools have been published.' : relayOwnershipState.phase === 'standby' ? 'Another open Skill Tree Maker tab currently owns the bridge. Focus this tab to make it the active MCP source.' : enabled ? 'Run this command on the same computer. This page retries the loopback connection automatically.' : 'Enable MCP first; then run the bridge command shown here.'}</small>
       </div>
       <div class="webmcp-command${enabled ? '' : ' is-disabled'}">
         <code>${escapeHtml(bridgeCommand())}</code>
         <button type="button" data-mcp-action="copy-command" ${enabled ? '' : 'disabled'}>Copy</button>
       </div>
-      <small class="webmcp-note">Bridge: <strong>${escapeHtml(relayStatusText())}</strong>. ${escapeHtml(relayState.detail)} The browser connects directly to <code>127.0.0.1:9333</code>; Chrome may request Local Network Access the first time.</small>
+      <small class="webmcp-note">Bridge: <strong>${escapeHtml(relayStatusText())}</strong>. ${escapeHtml(relayDetail)} The browser connects directly to <code>127.0.0.1:9333</code>; Chrome may request Local Network Access the first time.</small>
       ${relayState.phase === 'rejected' ? `<div class="webmcp-error">${escapeHtml(relayState.detail)}</div>` : ''}
     </div>`;
 }
@@ -197,7 +204,7 @@ function renderUi() {
   const panel = document.querySelector<HTMLElement>('.webmcp-panel');
   if (trigger) {
     const enabled = connectionState === 'enabled';
-    const ready = enabled && relayState.phase === 'connected' && relayState.publishedToolCount > 0;
+    const ready = enabled && relayOwnershipState.phase === 'active' && relayState.phase === 'connected' && relayState.publishedToolCount > 0;
     trigger.classList.toggle('is-ready', ready);
     trigger.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
     const status = trigger.querySelector<HTMLElement>('.webmcp-button-status');
@@ -205,7 +212,9 @@ function renderUi() {
       status.textContent = ready
         ? `${relayState.publishedToolCount} tools`
         : enabled
-          ? relayState.phase === 'connecting' ? 'Connecting' : 'Waiting'
+          ? relayOwnershipState.phase === 'standby'
+            ? 'Standby'
+            : relayState.phase === 'connecting' ? 'Connecting' : 'Waiting'
           : connectionState === 'enabling' ? 'Loading' : connectionState === 'error' ? 'Error' : 'Off';
     }
   }
@@ -256,6 +265,10 @@ function installUi() {
 
 subscribeBrowserRelayState((next) => {
   relayState = next;
+  renderUi();
+});
+subscribeBrowserRelayOwnershipState((next) => {
+  relayOwnershipState = next;
   renderUi();
 });
 
