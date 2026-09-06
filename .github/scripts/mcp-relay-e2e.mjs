@@ -24,6 +24,31 @@ async function waitForTools(client) {
   throw new Error(`Timed out waiting for ${expectedTool}. Visible MCP tools: ${lastNames.join(', ') || '(none)'}`);
 }
 
+async function enableMcp(page) {
+  await page.goto(pageUrl, { waitUntil: 'networkidle' });
+  await page.locator('.webmcp-button').click();
+  const enableButton = page.locator('[data-mcp-action="enable"]');
+  if ((await enableButton.textContent())?.includes('Enable MCP')) {
+    await enableButton.click();
+  }
+  await page.locator('[data-mcp-action="close"]').click();
+}
+
+async function waitForSingleProviderTools(client, expectedNames) {
+  const startedAt = Date.now();
+  let lastNames = [];
+  while (Date.now() - startedAt < timeoutMs) {
+    const list = await client.listTools();
+    lastNames = list.tools
+      .filter((tool) => tool.name.startsWith('skill_tree_'))
+      .map((tool) => tool.name)
+      .sort();
+    if (JSON.stringify(lastNames) === JSON.stringify(expectedNames)) return list.tools;
+    await delay(250);
+  }
+  throw new Error(`Skill Tree Maker tools did not settle to one provider. Expected ${expectedNames.join(', ')}, got ${lastNames.join(', ') || '(none)'}`);
+}
+
 const transport = new StdioClientTransport({
   command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
   args: [
@@ -41,22 +66,19 @@ const client = new Client(
 );
 
 let browser;
+let browserContext;
 try {
   await client.connect(transport);
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-  const page = await browser.newPage();
+  browserContext = await browser.newContext();
+  const page = await browserContext.newPage();
   const pageErrors = [];
-  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('pageerror', (error) => pageErrors.push(`tab 1: ${error.message}`));
 
-  await page.goto(pageUrl, { waitUntil: 'networkidle' });
-  await page.locator('.webmcp-button').click();
-  const enableButton = page.locator('[data-mcp-action="enable"]');
-  if ((await enableButton.textContent())?.includes('Enable MCP')) {
-    await enableButton.click();
-  }
+  await enableMcp(page);
 
   await page.waitForFunction(
-    () => document.querySelector('.webmcp-panel')?.textContent?.includes('Skill Tree Maker tools published'),
+    () => document.querySelector('.webmcp-button-status')?.textContent?.includes('tools'),
     undefined,
     { timeout: timeoutMs },
   );
@@ -66,8 +88,39 @@ try {
   if (dynamicTools.length < 10) {
     throw new Error(`Expected the Skill Tree Maker tool suite, found only ${dynamicTools.length}: ${dynamicTools.map((tool) => tool.name).join(', ')}`);
   }
+  const expectedDynamicNames = dynamicTools.map((tool) => tool.name).sort();
 
-  const contextTool = tools.find((tool) => tool.name === expectedTool);
+  const secondPage = await browserContext.newPage();
+  secondPage.on('pageerror', (error) => pageErrors.push(`tab 2: ${error.message}`));
+  await enableMcp(secondPage);
+  await secondPage.bringToFront();
+
+  await secondPage.waitForFunction(
+    () => document.querySelector('.webmcp-button-status')?.textContent?.includes('tools'),
+    undefined,
+    { timeout: timeoutMs },
+  );
+  await page.waitForFunction(
+    () => document.querySelector('.webmcp-button-status')?.textContent === 'Standby',
+    undefined,
+    { timeout: timeoutMs },
+  );
+  await waitForSingleProviderTools(client, expectedDynamicNames);
+
+  await page.bringToFront();
+  await page.waitForFunction(
+    () => document.querySelector('.webmcp-button-status')?.textContent?.includes('tools'),
+    undefined,
+    { timeout: timeoutMs },
+  );
+  await secondPage.waitForFunction(
+    () => document.querySelector('.webmcp-button-status')?.textContent === 'Standby',
+    undefined,
+    { timeout: timeoutMs },
+  );
+  const singleProviderTools = await waitForSingleProviderTools(client, expectedDynamicNames);
+
+  const contextTool = singleProviderTools.find((tool) => tool.name === expectedTool);
   if (!contextTool?.inputSchema || contextTool.inputSchema.type !== 'object') {
     throw new Error(`${expectedTool} does not expose an object input schema.`);
   }
@@ -87,8 +140,9 @@ try {
     throw new Error(`Browser page errors during MCP E2E: ${pageErrors.join(' | ')}`);
   }
 
-  console.log(`MCP E2E passed with ${dynamicTools.length} Skill Tree Maker tools. ${expectedTool} invoked successfully.`);
+  console.log(`MCP E2E passed with ${dynamicTools.length} Skill Tree Maker tools, one active publisher across two tabs, focus handoff, and successful ${expectedTool} invocation.`);
 } finally {
+  await browserContext?.close().catch(() => undefined);
   await browser?.close();
   await client.close().catch(() => undefined);
 }
