@@ -39,6 +39,40 @@ async function waitForStableSkillTreeTools(client) {
   throw new Error(`Timed out waiting for the Skill Tree Maker tool suite to stabilize. Visible MCP tools: ${lastNames.join(', ') || '(none)'}`);
 }
 
+async function waitForTool(client, toolName) {
+  const startedAt = Date.now();
+  let names = [];
+  while (Date.now() - startedAt < timeoutMs) {
+    names = await listSkillTreeToolNames(client);
+    if (names.includes(toolName)) return names;
+    await delay(250);
+  }
+  throw new Error(`Timed out waiting for ${toolName}. Visible Skill Tree Maker tools: ${names.join(', ') || '(none)'}`);
+}
+
+async function callJsonTool(client, name, args = {}) {
+  const result = await client.callTool({ name, arguments: args });
+  if (result.isError) throw new Error(`${name} returned an MCP error: ${JSON.stringify(result)}`);
+  const text = Array.isArray(result.content)
+    ? result.content.find((item) => item.type === 'text')?.text
+    : undefined;
+  if (typeof text !== 'string' || !text.trim()) throw new Error(`${name} did not return a text payload: ${JSON.stringify(result)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${name} did not return JSON text: ${text}`);
+  }
+}
+
+async function assertOneSource(client, label) {
+  const payload = await callJsonTool(client, 'webmcp_list_sources');
+  const sources = Array.isArray(payload?.sources) ? payload.sources : Array.isArray(payload) ? payload : null;
+  const count = typeof payload?.count === 'number' ? payload.count : sources?.length;
+  if (count !== 1) {
+    throw new Error(`${label}: expected exactly one connected WebMCP source, got ${String(count)}: ${JSON.stringify(payload)}`);
+  }
+}
+
 async function enableMcp(page) {
   await page.goto(pageUrl, { waitUntil: 'networkidle' });
   await page.locator('.webmcp-button').click();
@@ -47,17 +81,6 @@ async function enableMcp(page) {
     await enableButton.click();
   }
   await page.locator('[data-mcp-action="close"]').click();
-}
-
-async function waitForSingleProviderTools(client, expectedNames) {
-  const startedAt = Date.now();
-  let lastNames = [];
-  while (Date.now() - startedAt < timeoutMs) {
-    lastNames = await listSkillTreeToolNames(client);
-    if (JSON.stringify(lastNames) === JSON.stringify(expectedNames)) return client.listTools();
-    await delay(250);
-  }
-  throw new Error(`Skill Tree Maker tools did not settle to one provider. Expected ${expectedNames.join(', ')}, got ${lastNames.join(', ') || '(none)'}`);
 }
 
 const transport = new StdioClientTransport({
@@ -94,7 +117,8 @@ try {
     { timeout: timeoutMs },
   );
 
-  const expectedDynamicNames = await waitForStableSkillTreeTools(client);
+  const initialTools = await waitForStableSkillTreeTools(client);
+  await assertOneSource(client, 'single-tab baseline');
 
   const secondPage = await browserContext.newPage();
   secondPage.on('pageerror', (error) => pageErrors.push(`tab 2: ${error.message}`));
@@ -111,7 +135,8 @@ try {
     undefined,
     { timeout: timeoutMs },
   );
-  await waitForSingleProviderTools(client, expectedDynamicNames);
+  const secondTabTools = await waitForTool(client, expectedTool);
+  await assertOneSource(client, 'second-tab handoff');
 
   await page.bringToFront();
   await page.locator('.webmcp-button').click();
@@ -126,29 +151,21 @@ try {
     undefined,
     { timeout: timeoutMs },
   );
-  const singleProviderTools = await waitForSingleProviderTools(client, expectedDynamicNames);
+  const returnedTools = await waitForTool(client, expectedTool);
+  await assertOneSource(client, 'first-tab handoff return');
 
-  const contextTool = singleProviderTools.tools.find((tool) => tool.name === expectedTool);
+  const contextTool = (await client.listTools()).tools.find((tool) => tool.name === expectedTool);
   if (!contextTool?.inputSchema || contextTool.inputSchema.type !== 'object') {
     throw new Error(`${expectedTool} does not expose an object input schema.`);
   }
 
-  const result = await client.callTool({ name: expectedTool, arguments: {} });
-  if (result.isError) {
-    throw new Error(`${expectedTool} invocation returned an MCP error: ${JSON.stringify(result)}`);
-  }
-  const text = Array.isArray(result.content)
-    ? result.content.find((item) => item.type === 'text')?.text
-    : undefined;
-  if (typeof text !== 'string' || !text.trim()) {
-    throw new Error(`${expectedTool} did not return a text payload: ${JSON.stringify(result)}`);
-  }
+  await callJsonTool(client, expectedTool);
 
   if (pageErrors.length) {
     throw new Error(`Browser page errors during MCP E2E: ${pageErrors.join(' | ')}`);
   }
 
-  console.log(`MCP E2E passed with ${expectedDynamicNames.length} Skill Tree Maker tools, one active publisher across two tabs, focus/interaction handoff, and successful ${expectedTool} invocation.`);
+  console.log(`MCP E2E passed: initial=${initialTools.length} tools, second-tab=${secondTabTools.length}, returned=${returnedTools.length}, exactly one connected source throughout both handoffs, and successful ${expectedTool} invocation.`);
 } finally {
   await browserContext?.close().catch(() => undefined);
   await browser?.close();
