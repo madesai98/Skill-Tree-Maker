@@ -1,0 +1,78 @@
+.brand-mark {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: center / contain no-repeat url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiBmaWxsPSJub25lIj4KICA8ZyB0cmFuc2Zvcm09InJvdGF0ZSg0NSAyNTYgMjQ4KSI+CiAgICA8ZyBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMTAiIHN0cm9rZS1saW5lY2FwPSJidXR0Ij4KICAgICAgPHBhdGggZD0iTTI1NiAxNDdWMTc4IiAvPgogICAgICA8cGF0aCBkPSJNMjU2IDMxOFYzNDciIC8+CiAgICAgIDxwYXRoIGQ9Ik0xNTAgMjQ4SDE4NiIgLz4KICAgICAgPHBhdGggZD0iTTMyNiAyNDhIMzYyIiAvPgogICAgPC9nPgogICAgPGcgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjEwIj4KICAgICAgPGNpcmNsZSBjeD0iMjU2IiBjeT0iMTA4IiByPSIzOSIgLz4KICAgICAgPGNpcmNsZSBjeD0iMTExIiBjeT0iMjQ4IiByPSIzOSIgLz4KICAgICAgPGNpcmNsZSBjeD0iNDAxIiBjeT0iMjQ4IiByPSIzOSIgLz4KICAgICAgPGNpcmNsZSBjeD0iMjU2IiBjeT0iMzg2IiByPSIzOSIgLz4KICAgIDwvZz4KICAgIDxnIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSIxMCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj4KICAgICAgPHBhdGggZD0iTTI1NiAxNzhMMjc3LjQgMTk2LjNMMzA1LjUgMTk4LjVMMzA3LjcgMjI2LjZMMzI2IDI0OEwzMDcuNyAyNjkuNEwzMDUuNSAyOTcuNUwyNzcuNCAyOTkuN0wyNTYgMzE4TDIzNC42IDI5OS43TDIwNi41IDI5Ny41TDIwNC4zIDI2OS40TDE4NiAyNDhMMjA0LjMgMjI2LjZMMjA2LjUgMTk4LjVMMjM0LjYgMTk2LjNaIiAvPgogICAgICA8Y2lyY2xlIGN4PSIyNTYiIGN5PSIyNDgiIHI9IjI2IiAvPgogICAgPC9nPgogIDwvZz4KPC9zdmc+");
+  box-shadow: none;
+}
+
+.brand-mark span {
+  display: none;
+}
+
+.eyebrow {
+  font-size: 0;
+}
+
+.eyebrow::after {
+  content: 'SKILL TREE MAKER';
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: .17em;
+  font-weight: 800;
+  color: #727c8c;
+}
+
+.brand-block h1 {
+  max-width: 210px;
+  font-size: 0;
+  cursor: text;
+  outline: none;
+}
+
+.brand-block h1::after {
+  content: attr(data-project-name);
+  display: block;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 680;
+  letter-spacing: -.02em;
+}
+
+.brand-block h1:focus-visible {
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(182, 255, 86, .28);
+}
+
+@media (max-width: 760px) {
+  .brand-mark {
+    flex-basis: 31px;
+    width: 31px;
+    height: 31px;
+  }
+
+  .brand-block h1 {
+    font-size: 0;
+  }
+
+  .brand-block h1::after {
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-block h1 {
+    font-size: 0;
+  }
+
+  .brand-block h1::after {
+    font-size: 12px;
+  }
+}

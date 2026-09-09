@@ -1,5 +1,6 @@
 import './history';
 import './projectRuntime';
+import './brandRuntime';
 import './solverRuntime';
 import './webMcpConnection';
 import './webMcpCoreTools';
@@ -17,6 +18,7 @@ import './nodeLabels.css';
 import './iconPool.css';
 import './playtest.css';
 import './perks.css';
+import './branding.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(
