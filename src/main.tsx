@@ -1,5 +1,6 @@
 import './history';
 import './projectRuntime';
+import './solverRuntime';
 import './webMcpConnection';
 import './webMcpCoreTools';
 import './webMcpProjectTools';
