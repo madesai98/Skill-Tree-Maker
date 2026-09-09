@@ -59,6 +59,8 @@ type StatDefinition = {
   groupKey: string;
   groupIconId: string | null;
   groupColor: string;
+  groupOrder: number;
+  groupCollapsed: boolean;
 };
 
 type CurrencyDefinition = {
@@ -147,6 +149,8 @@ type StatGroupView = {
   key: string;
   iconId: string | null;
   color: string;
+  order: number;
+  collapsed: boolean;
   stats: StatDefinition[];
 };
 
@@ -169,9 +173,9 @@ const NODE_SIZE = 62;
 const NODE_RADIUS = 29;
 
 const starterStats: StatDefinition[] = [
-  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
-  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
-  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', baseValue: false, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56' },
+  { id: 'stat-damage', key: 'tower.damage', name: 'Tower Damage', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56', groupOrder: 0, groupCollapsed: false },
+  { id: 'stat-range', key: 'tower.range', name: 'Tower Range', type: 'number', baseValue: 0, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56', groupOrder: 0, groupCollapsed: false },
+  { id: 'stat-crit', key: 'tower.canCrit', name: 'Can Critical Hit', type: 'boolean', baseValue: false, iconId: null, groupId: 'stat-group-tower', groupName: 'Tower', groupKey: 'tower', groupIconId: null, groupColor: '#b6ff56', groupOrder: 0, groupCollapsed: false },
 ];
 
 const starterCurrencies: CurrencyDefinition[] = [
@@ -340,6 +344,10 @@ function uniqueStatLocalKey(groupKey: string, base: string, stats: StatDefinitio
   return `${desired}.${index}`;
 }
 
+function nextStatGroupOrder(stats: StatDefinition[]) {
+  return stats.reduce((max, stat) => Math.max(max, stat.groupOrder), -1) + 1;
+}
+
 function defaultProject(): PersistedProject {
   return {
     version: 2,
@@ -406,6 +414,7 @@ function sanitizeEdges(rawEdges: unknown[], nodes: SkillFlowNode[]) {
 function normalizeStats(raw: unknown): StatDefinition[] {
   if (!Array.isArray(raw)) return [];
   const inferredGroupIds = new Map<string, string>();
+  const inferredGroupMeta = new Map<string, { order: number; collapsed: boolean }>();
   return raw.flatMap((item, index) => {
     if (!item || typeof item !== 'object') return [];
     const value = item as Record<string, unknown>;
@@ -417,10 +426,13 @@ function normalizeStats(raw: unknown): StatDefinition[] {
       ? value.groupName
       : statGroupNameFromKey(groupKey);
     let groupId = typeof value.groupId === 'string' && value.groupId ? value.groupId : inferredGroupIds.get(groupKey);
-    if (!groupId) {
-      groupId = `stat-group-import-${index}`;
-      inferredGroupIds.set(groupKey, groupId);
-    }
+    if (!groupId) groupId = `stat-group-import-${index}`;
+    inferredGroupIds.set(groupKey, groupId);
+    const groupMeta = inferredGroupMeta.get(groupId) ?? {
+      order: typeof value.groupOrder === 'number' && Number.isFinite(value.groupOrder) ? value.groupOrder : index,
+      collapsed: value.groupCollapsed === true,
+    };
+    inferredGroupMeta.set(groupId, groupMeta);
     const localKey = groupKey && rawKey.startsWith(`${groupKey}.`)
       ? rawKey.slice(groupKey.length + 1)
       : inferred.localKey;
@@ -438,6 +450,8 @@ function normalizeStats(raw: unknown): StatDefinition[] {
       groupKey,
       groupIconId: typeof value.groupIconId === 'string' ? value.groupIconId : null,
       groupColor: normalizeColor(value.groupColor),
+      groupOrder: groupMeta.order,
+      groupCollapsed: groupMeta.collapsed,
     }];
   });
 }
@@ -943,7 +957,6 @@ function SkillTreeEditor() {
   const suppressContextMenuUntilRef = useRef(0);
   const clipboardRef = useRef<ClipboardSnapshot | null>(null);
   const pasteCountRef = useRef(0);
-  const [collapsedStatGroupIds, setCollapsedStatGroupIds] = useState<Set<string>>(() => new Set());
   const [draggedStatGroupId, setDraggedStatGroupId] = useState<string | null>(null);
   const [statGroupDropTarget, setStatGroupDropTarget] = useState<{ groupId: string; placement: 'before' | 'after' } | null>(null);
 
@@ -957,17 +970,23 @@ function SkillTreeEditor() {
         existing.stats.push(stat);
         return;
       }
-      groups.set(stat.groupId, { id: stat.groupId, name: stat.groupName, key: stat.groupKey, iconId: stat.groupIconId, color: stat.groupColor, stats: [stat] });
+      groups.set(stat.groupId, {
+        id: stat.groupId,
+        name: stat.groupName,
+        key: stat.groupKey,
+        iconId: stat.groupIconId,
+        color: stat.groupColor,
+        order: stat.groupOrder,
+        collapsed: stat.groupCollapsed,
+        stats: [stat],
+      });
     });
-    return [...groups.values()];
+    return [...groups.values()].sort((left, right) => left.order - right.order);
   }, [stats]);
+  const allStatGroupsCollapsed = statGroups.length > 0 && statGroups.every((group) => group.collapsed);
 
   useEffect(() => {
     const validGroupIds = new Set(statGroups.map((group) => group.id));
-    setCollapsedStatGroupIds((current) => {
-      const next = new Set([...current].filter((groupId) => validGroupIds.has(groupId)));
-      return next.size === current.size ? current : next;
-    });
     setDraggedStatGroupId((current) => current && !validGroupIds.has(current) ? null : current);
     setStatGroupDropTarget((current) => current && !validGroupIds.has(current.groupId) ? null : current);
   }, [statGroups]);
@@ -1506,6 +1525,8 @@ function SkillTreeEditor() {
           groupKey,
           groupIconId: null,
           groupColor: '#b6ff56',
+          groupOrder: nextStatGroupOrder(current),
+          groupCollapsed: false,
         },
       ];
     });
@@ -1530,6 +1551,8 @@ function SkillTreeEditor() {
           groupKey: group.groupKey,
           groupIconId: group.groupIconId,
           groupColor: group.groupColor,
+          groupOrder: group.groupOrder,
+          groupCollapsed: group.groupCollapsed,
         },
       ];
     });
@@ -1563,6 +1586,7 @@ function SkillTreeEditor() {
       const groupName = `${source[0].groupName} Copy`;
       const groupKey = uniqueGroupKey(statGameKeyFromDisplayName(groupName), current);
       const nextGroupId = uid('stat-group');
+      const groupOrder = nextStatGroupOrder(current);
       return [
         ...current,
         ...source.map((stat) => ({
@@ -1571,6 +1595,7 @@ function SkillTreeEditor() {
           groupId: nextGroupId,
           groupName,
           groupKey,
+          groupOrder,
           key: composeStatKey(groupKey, statLocalKey(stat)),
         })),
       ];
@@ -1578,34 +1603,50 @@ function SkillTreeEditor() {
   };
 
   const toggleStatGroupCollapsed = (groupId: string) => {
-    setCollapsedStatGroupIds((current) => {
-      const next = new Set(current);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
+    setStats((current) => {
+      const group = current.find((stat) => stat.groupId === groupId);
+      if (!group) return current;
+      const groupCollapsed = !group.groupCollapsed;
+      return current.map((stat) => stat.groupId === groupId
+        ? { ...stat, groupCollapsed }
+        : stat);
     });
+  };
+
+  const toggleAllStatGroupsCollapsed = () => {
+    const groupCollapsed = !allStatGroupsCollapsed;
+    setStats((current) => current.map((stat) => stat.groupCollapsed === groupCollapsed
+      ? stat
+      : { ...stat, groupCollapsed }));
   };
 
   const reorderStatGroup = (sourceGroupId: string, targetGroupId: string, placement: 'before' | 'after') => {
     if (sourceGroupId === targetGroupId) return;
     setStats((current) => {
       const groupOrder: string[] = [];
-      const groupedStats = new Map<string, StatDefinition[]>();
-      current.forEach((stat) => {
-        if (!groupedStats.has(stat.groupId)) {
-          groupedStats.set(stat.groupId, []);
+      const seenGroupIds = new Set<string>();
+      current
+        .map((stat, index) => ({ stat, index }))
+        .sort((left, right) => left.stat.groupOrder - right.stat.groupOrder || left.index - right.index)
+        .forEach(({ stat }) => {
+          if (seenGroupIds.has(stat.groupId)) return;
+          seenGroupIds.add(stat.groupId);
           groupOrder.push(stat.groupId);
-        }
-        groupedStats.get(stat.groupId)!.push(stat);
-      });
+        });
 
-      if (!groupedStats.has(sourceGroupId) || !groupedStats.has(targetGroupId)) return current;
+      if (!seenGroupIds.has(sourceGroupId) || !seenGroupIds.has(targetGroupId)) return current;
       const nextGroupOrder = groupOrder.filter((groupId) => groupId !== sourceGroupId);
       const targetIndex = nextGroupOrder.indexOf(targetGroupId);
       const insertIndex = placement === 'after' ? targetIndex + 1 : targetIndex;
       nextGroupOrder.splice(insertIndex, 0, sourceGroupId);
       if (nextGroupOrder.every((groupId, index) => groupId === groupOrder[index])) return current;
-      return nextGroupOrder.flatMap((groupId) => groupedStats.get(groupId) ?? []);
+      const orderByGroupId = new Map(nextGroupOrder.map((groupId, index) => [groupId, index]));
+      return current.map((stat) => {
+        const groupOrderValue = orderByGroupId.get(stat.groupId);
+        return groupOrderValue === undefined || stat.groupOrder === groupOrderValue
+          ? stat
+          : { ...stat, groupOrder: groupOrderValue };
+      });
     });
   };
 
@@ -2370,7 +2411,14 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               <h2>Stat pool</h2>
               <p>Organize typed stat lines into game-key groups used by skill effects.</p>
             </div>
-            <button className="primary-button" onClick={addStatGroup}><Icon name="plus" /> Add group</button>
+            <div className="top-actions">
+              {statGroups.length > 0 && (
+                <button className="small-button" onClick={toggleAllStatGroupsCollapsed}>
+                  {allStatGroupsCollapsed ? 'Expand All' : 'Collapse All'}
+                </button>
+              )}
+              <button className="primary-button" onClick={addStatGroup}><Icon name="plus" /> Add group</button>
+            </div>
           </div>
 
           {stats.length === 0 ? (
@@ -2380,7 +2428,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
           ) : (
             <div className="stat-group-list">
               {statGroups.map((group) => {
-                const collapsed = collapsedStatGroupIds.has(group.id);
+                const collapsed = group.collapsed;
                 const dropPlacement = statGroupDropTarget?.groupId === group.id ? statGroupDropTarget.placement : null;
                 return (
                 <section
@@ -2390,15 +2438,19 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                     if (!draggedStatGroupId || draggedStatGroupId === group.id) return;
                     event.preventDefault();
                     event.dataTransfer.dropEffect = 'move';
-                    const rect = event.currentTarget.getBoundingClientRect();
+                    const toolbar = event.currentTarget.querySelector<HTMLElement>('.stat-group-toolbar');
+                    const rect = toolbar?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
                     const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
                     setStatGroupDropTarget({ groupId: group.id, placement });
                   }}
                   onDrop={(event) => {
                     event.preventDefault();
                     const sourceGroupId = draggedStatGroupId ?? event.dataTransfer.getData('text/plain');
-                    if (sourceGroupId && sourceGroupId !== group.id && dropPlacement) {
-                      reorderStatGroup(sourceGroupId, group.id, dropPlacement);
+                    const toolbar = event.currentTarget.querySelector<HTMLElement>('.stat-group-toolbar');
+                    const rect = toolbar?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
+                    const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+                    if (sourceGroupId && sourceGroupId !== group.id) {
+                      reorderStatGroup(sourceGroupId, group.id, placement);
                     }
                     setDraggedStatGroupId(null);
                     setStatGroupDropTarget(null);
