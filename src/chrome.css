@@ -1,0 +1,553 @@
+body.app-chrome-ready .topbar {
+  overflow: visible;
+}
+
+body.app-chrome-ready .view-switcher {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-height: 54px;
+  padding: 5px 7px 4px;
+  overflow: visible;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, .025);
+}
+
+body.app-chrome-ready .view-switcher button {
+  --dock-scale: 1;
+  --dock-lift: 0px;
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  overflow: visible;
+  gap: 0;
+  justify-content: center;
+  font-size: 0;
+  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+
+body.app-chrome-ready .view-switcher button svg {
+  width: 20px;
+  height: 20px;
+  transform: translateY(var(--dock-lift)) scale(var(--dock-scale));
+  transform-origin: center bottom;
+  transition: transform .16s cubic-bezier(.2, .8, .2, 1), color .15s ease;
+  will-change: transform;
+}
+
+body.app-chrome-ready .view-switcher button.active {
+  background: rgba(255, 255, 255, .05);
+}
+
+body.app-chrome-ready .view-switcher button.active svg {
+  color: var(--accent);
+}
+
+body.app-chrome-ready .view-switcher button.active::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  box-shadow: 0 0 9px rgba(182, 255, 86, .38);
+}
+
+body.app-chrome-ready .view-switcher button::after {
+  content: attr(data-view-label);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  z-index: 70;
+  max-width: 160px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 7px;
+  background: rgba(16, 20, 27, .98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  color: #e5e9ee;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -3px);
+  transition: opacity .12s ease, transform .12s ease;
+}
+
+body.app-chrome-ready .view-switcher button:hover::after,
+body.app-chrome-ready .view-switcher button:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (min-width: 761px) {
+  body.app-chrome-ready .view-switcher button:has(+ button:hover),
+  body.app-chrome-ready .view-switcher button:hover + button {
+    --dock-scale: 1.18;
+    --dock-lift: -3px;
+  }
+
+  body.app-chrome-ready .view-switcher button:has(+ button + button:hover),
+  body.app-chrome-ready .view-switcher button:hover + button + button {
+    --dock-scale: 1.07;
+    --dock-lift: -1px;
+  }
+
+  body.app-chrome-ready .view-switcher button:hover {
+    --dock-scale: 1.42;
+    --dock-lift: -7px;
+  }
+}
+
+.app-view-menu-button,
+.app-settings-button {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: #12161d;
+  color: #aeb6c2;
+}
+
+.app-view-menu-button:hover,
+.app-settings-button:hover,
+.app-settings-button[aria-expanded="true"] {
+  background: #181d25;
+  color: #fff;
+}
+
+.app-view-menu-button svg,
+.app-settings-button svg,
+.app-settings-entry-svg svg,
+.app-settings-file-actions svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-view-menu-button {
+  display: none;
+}
+
+body.app-chrome-ready .top-actions {
+  position: relative;
+  gap: 0;
+}
+
+body.app-chrome-ready .top-actions > .save-status,
+body.app-chrome-ready .top-actions > button.icon-button.labeled {
+  display: none !important;
+}
+
+body.app-chrome-ready .top-actions > .webmcp-control,
+body.app-chrome-ready .top-actions > .project-manager-control,
+body.app-chrome-ready .top-actions > .history-control {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  height: 0;
+  min-height: 0;
+  overflow: visible;
+}
+
+body.app-chrome-ready .top-actions > .webmcp-control > .webmcp-button,
+body.app-chrome-ready .top-actions > .project-manager-control > .project-manager-button,
+body.app-chrome-ready .top-actions > .history-control > .history-button {
+  display: none !important;
+}
+
+.app-settings-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.app-settings-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 280;
+  width: 290px;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 12px;
+  background: rgba(14, 17, 23, .985);
+  box-shadow: 0 18px 56px rgba(0, 0, 0, .46);
+  color: #dfe4e9;
+}
+
+.app-settings-panel[hidden] {
+  display: none !important;
+}
+
+.app-settings-head {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+
+.app-settings-head strong {
+  font-size: 11px;
+}
+
+.app-settings-head small {
+  color: #727c89;
+  font-size: 8.5px;
+}
+
+.app-settings-entry {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #c7ced7;
+  text-align: left;
+}
+
+.app-settings-entry:hover {
+  background: rgba(255, 255, 255, .045);
+  color: #f4f6f8;
+}
+
+.app-settings-entry-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .025);
+  color: #9ea7b3;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.app-settings-entry-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.app-settings-entry-copy strong,
+.app-settings-entry-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-settings-entry-copy strong {
+  color: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.app-settings-entry-copy small {
+  color: #747e8b;
+  font-size: 8.5px;
+  font-weight: 560;
+}
+
+.app-settings-chevron {
+  color: #5f6875;
+  font-size: 17px;
+}
+
+.app-settings-save {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  padding: 7px 9px;
+  border-top: 1px solid rgba(255, 255, 255, .07);
+  color: #7d8794;
+  font-size: 9px;
+}
+
+.app-settings-save i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 10px rgba(124, 232, 31, .4);
+}
+
+.app-settings-file-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.app-settings-file-actions button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 8px;
+  background: #151a22;
+  color: #aeb6c1;
+  font-size: 9.5px;
+  font-weight: 690;
+}
+
+.app-settings-file-actions button:hover {
+  background: #1b212b;
+  color: #fff;
+}
+
+.app-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 490;
+  background: rgba(3, 5, 8, .7);
+  backdrop-filter: blur(6px);
+}
+
+.app-modal-backdrop[hidden] {
+  display: none !important;
+}
+
+body.app-chrome-ready .webmcp-panel,
+body.app-chrome-ready .project-manager-panel,
+body.app-chrome-ready .history-panel {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  z-index: 500 !important;
+  transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px);
+  max-height: min(82dvh, 760px);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .58);
+}
+
+body.app-chrome-ready .webmcp-panel {
+  width: min(560px, calc(100vw - 32px));
+}
+
+body.app-chrome-ready .project-manager-panel {
+  width: min(440px, calc(100vw - 32px));
+}
+
+body.app-chrome-ready .history-panel {
+  width: min(390px, calc(100vw - 32px));
+}
+
+body.app-chrome-ready .history-list {
+  max-height: min(60dvh, 520px);
+}
+
+.app-history-modal-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #89919d;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.app-history-modal-close:hover {
+  background: rgba(255, 255, 255, .05);
+  color: #fff;
+}
+
+@media (max-width: 980px) and (min-width: 761px) {
+  body.app-chrome-ready .app-shell,
+  body.app-chrome-ready.solver-active .app-shell {
+    grid-template-rows: 72px minmax(0, 1fr);
+  }
+
+  body.app-chrome-ready .topbar {
+    grid-template-columns: minmax(150px, 1fr) auto minmax(52px, 1fr);
+    grid-template-rows: 72px;
+    gap: 0 10px;
+    padding: 0 12px;
+  }
+
+  body.app-chrome-ready .brand-block {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.app-chrome-ready .view-switcher {
+    position: relative;
+    grid-column: 2;
+    grid-row: 1;
+    width: auto;
+    min-width: 0;
+    display: flex;
+    grid-template-columns: none;
+    transform: none;
+  }
+
+  body.app-chrome-ready .top-actions {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+}
+
+@media (max-width: 760px) {
+  body.app-chrome-ready .app-shell,
+  body.app-chrome-ready.solver-active .app-shell {
+    grid-template-rows: 64px minmax(0, 1fr);
+  }
+
+  body.app-chrome-ready .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 64px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  body.app-chrome-ready .brand-block {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  body.app-chrome-ready .top-actions {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    justify-self: end;
+    gap: 6px;
+  }
+
+  .app-view-menu-button {
+    display: inline-flex;
+  }
+
+  body.app-chrome-ready .view-switcher {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 10px;
+    right: 10px;
+    z-index: 260;
+    width: auto;
+    max-height: calc(100dvh - 82px);
+    min-height: 0;
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    padding: 7px;
+    overflow: auto;
+    border-radius: 12px;
+    background: rgba(14, 17, 23, .985);
+    box-shadow: 0 18px 56px rgba(0, 0, 0, .46);
+    backdrop-filter: blur(16px);
+  }
+
+  body.app-chrome-ready .topbar.is-view-menu-open .view-switcher {
+    display: flex;
+  }
+
+  body.app-chrome-ready .view-switcher button {
+    width: 100%;
+    min-width: 0;
+    height: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    align-items: center;
+    justify-content: stretch;
+    gap: 7px;
+    padding: 0 9px;
+    border-radius: 8px;
+    text-align: left;
+  }
+
+  body.app-chrome-ready .view-switcher button svg {
+    width: 18px;
+    height: 18px;
+    justify-self: center;
+    transform: none !important;
+  }
+
+  body.app-chrome-ready .view-switcher button::after {
+    content: attr(data-view-label);
+    position: static;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: #aeb6c2;
+    font-size: 11px;
+    font-weight: 690;
+    line-height: 1.2;
+    opacity: 1;
+    transform: none;
+    white-space: normal;
+  }
+
+  body.app-chrome-ready .view-switcher button.active::after,
+  body.app-chrome-ready .view-switcher button:hover::after {
+    color: #f2f5f7;
+  }
+
+  body.app-chrome-ready .view-switcher button.active::before {
+    left: 3px;
+    top: 50%;
+    bottom: auto;
+    width: 3px;
+    height: 18px;
+    transform: translateY(-50%);
+  }
+
+  .app-settings-panel {
+    position: fixed;
+    top: 72px;
+    right: 10px;
+    width: min(320px, calc(100vw - 20px));
+    max-height: calc(100dvh - 82px);
+    overflow: auto;
+  }
+
+  body.app-chrome-ready .webmcp-panel,
+  body.app-chrome-ready .project-manager-panel,
+  body.app-chrome-ready .history-panel {
+    width: calc(100vw - 20px);
+    max-width: 620px;
+    max-height: calc(100dvh - 28px);
+  }
+}

@@ -8,6 +8,7 @@ import './webMcpProjectTools';
 import './webMcpAppTools';
 import './statKeySync';
 import './statSearchSelect';
+import './chromeRuntime';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@xyflow/react/dist/style.css';
@@ -19,6 +20,7 @@ import './iconPool.css';
 import './playtest.css';
 import './perks.css';
 import './branding.css';
+import './chrome.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(
