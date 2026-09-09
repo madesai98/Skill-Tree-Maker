@@ -1,5 +1,6 @@
 import './history';
 import './projectRuntime';
+import './brandRuntime';
 import './solverRuntime';
 import './webMcpConnection';
 import './webMcpCoreTools';
@@ -11,6 +12,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
+import './branding.css';
 import './mobile.css';
 import './shortcutLegend.css';
 import './nodeLabels.css';
