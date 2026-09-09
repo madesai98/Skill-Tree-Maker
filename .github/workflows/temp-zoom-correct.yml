@@ -1,0 +1,45 @@
+name: Temporary zoom correction
+run-name: Correct zoom-out patch
+
+on:
+  push:
+    branches: [zoom-out-further-20260909]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: zoom-out-further-20260909
+          fetch-depth: 0
+
+      - name: Correct focused React Flow zoom change
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/App.tsx')
+          text = path.read_text()
+          old = "                fitView\n                minZoom={0.1}\n                fitViewOptions={{ padding: 0.25 }}\n                minZoom={0.25}\n                maxZoom={2.5}\n"
+          new = "                fitView\n                fitViewOptions={{ padding: 0.25 }}\n                minZoom={0.1}\n                maxZoom={2.5}\n"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one duplicate zoom block, found {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm .github/workflows/temp-zoom-correct.yml
+
+      - name: Commit correction and cleanup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.tsx .github/workflows/temp-zoom-correct.yml
+          git commit -m "Correct skill tree minimum zoom"
+          git push origin HEAD:zoom-out-further-20260909
