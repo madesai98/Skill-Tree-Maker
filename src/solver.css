@@ -1,0 +1,330 @@
+body.solver-active .app-shell > :not(.topbar):not(.solver-view) {
+  display: none !important;
+}
+
+.solver-tab-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.solver-view {
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  background: #090b0f;
+}
+
+.solver-view[hidden] {
+  display: none !important;
+}
+
+.solver-sidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  background: #0e1117;
+  scrollbar-width: thin;
+  scrollbar-color: #2b323c transparent;
+}
+
+.solver-heading {
+  padding: 2px 2px 12px;
+}
+
+.solver-heading h2 {
+  margin: 6px 0 5px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+
+.solver-heading p,
+.solver-help {
+  margin: 0;
+  color: #747e8d;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.solver-section {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #12161e;
+}
+
+.solver-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.solver-section-title {
+  display: flex;
+  align-items: center;
+  margin-bottom: 9px;
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: .01em;
+}
+
+.solver-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.solver-buttons.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.solver-section button {
+  min-height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #171c25;
+  color: #aeb7c2;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.solver-section button:hover:not(:disabled) {
+  background: #1e2530;
+  color: #f3f5f7;
+}
+
+.solver-section button:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+}
+
+.solver-section .solver-run,
+.solver-section .solver-apply {
+  background: var(--accent);
+  border-color: transparent;
+  color: #10150b;
+}
+
+.solver-section .solver-run:hover:not(:disabled),
+.solver-section .solver-apply:hover:not(:disabled) {
+  background: #c4ff74;
+  color: #10150b;
+}
+
+.solver-warning {
+  padding: 8px 9px;
+  border: 1px dashed rgba(182,255,86,.18);
+  border-radius: 8px;
+  background: rgba(182,255,86,.035);
+  color: #8e9a82;
+}
+
+.solver-status-dot {
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #687180;
+}
+
+.solver-status-dot.running {
+  background: var(--accent-2);
+  box-shadow: 0 0 10px rgba(124,232,31,.42);
+}
+
+.solver-status-dot.crossing {
+  background: var(--danger);
+}
+
+.solver-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  margin-top: 10px;
+  color: #747e8d;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.solver-stats b {
+  color: #dfe4e9;
+  font-weight: 650;
+}
+
+.solver-number-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: 9px;
+  align-items: center;
+  margin: 7px 0 11px;
+  color: #aeb6c1;
+  font-size: 10px;
+}
+
+.solver-number-row input[type="number"] {
+  height: 31px;
+  padding: 0 8px;
+}
+
+.solver-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px;
+  gap: 5px 8px;
+  align-items: center;
+  margin: 9px 0;
+  color: #aeb6c1;
+  font-size: 10px;
+}
+
+.solver-control input[type="range"] {
+  grid-column: 1 / 3;
+  width: 100%;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+.solver-value {
+  text-align: right;
+  color: #d1d7de;
+  font-variant-numeric: tabular-nums;
+}
+
+.solver-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: #aeb6c1;
+  font-size: 10px;
+}
+
+.solver-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.solver-viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(182,255,86,.018), transparent 45%),
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+    #0a0d12;
+  background-size: auto, 32px 32px, 32px 32px, auto;
+}
+
+.solver-viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.solver-viewport canvas:active {
+  cursor: grabbing;
+}
+
+.solver-canvas-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  max-width: min(520px, calc(100% - 28px));
+  padding: 7px 9px;
+  border: 1px solid rgba(182,255,86,.13);
+  border-radius: 8px;
+  background: rgba(10,13,18,.82);
+  color: #849176;
+  font-size: 10px;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.solver-toast {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 3;
+  max-width: min(520px, calc(100% - 28px));
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(16,20,26,.94);
+  color: #d8e0ea;
+  font-size: 11px;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: .18s ease;
+  pointer-events: none;
+}
+
+.solver-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 980px) {
+  body.solver-active .app-shell {
+    grid-template-rows: 116px minmax(0, 1fr);
+  }
+
+  .view-switcher {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .solver-view {
+    grid-row: 2;
+    grid-template-columns: 275px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  body.solver-active .app-shell {
+    grid-template-rows: 108px minmax(0, 1fr);
+  }
+
+  .solver-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .solver-sidebar {
+    grid-row: 2;
+    max-height: 42dvh;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .solver-viewport {
+    grid-row: 1;
+  }
+}
+
+@media (max-width: 520px) {
+  .view-switcher button span {
+    display: none;
+  }
+
+  .view-switcher button {
+    padding-inline: 3px;
+  }
+}
