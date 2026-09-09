@@ -2115,9 +2115,8 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                 onPaneContextMenu={(event) => event.preventDefault()}
                 panOnDrag={[0, 2]}
                 fitView
-                minZoom={0.1}
                 fitViewOptions={{ padding: 0.25 }}
-                minZoom={0.25}
+                minZoom={0.1}
                 maxZoom={2.5}
                 nodesDraggable={!isPlaytest}
                 elementsSelectable={!isPlaytest}
