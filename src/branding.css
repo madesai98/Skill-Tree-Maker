@@ -50,3 +50,29 @@
   border-radius: 4px;
   box-shadow: 0 0 0 2px rgba(182, 255, 86, .28);
 }
+
+@media (max-width: 760px) {
+  .brand-mark {
+    flex-basis: 31px;
+    width: 31px;
+    height: 31px;
+  }
+
+  .brand-block h1 {
+    font-size: 0;
+  }
+
+  .brand-block h1::after {
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-block h1 {
+    font-size: 0;
+  }
+
+  .brand-block h1::after {
+    font-size: 12px;
+  }
+}
