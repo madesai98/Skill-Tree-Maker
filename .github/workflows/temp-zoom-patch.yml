@@ -1,0 +1,45 @@
+name: Temporary zoom patch
+run-name: Apply zoom-out patch
+
+on:
+  push:
+    branches: [zoom-out-further-20260909]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: zoom-out-further-20260909
+          fetch-depth: 0
+
+      - name: Apply focused React Flow zoom change
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/App.tsx')
+          text = path.read_text()
+          old = "                panOnDrag={[0, 2]}\n                fitView\n"
+          new = "                panOnDrag={[0, 2]}\n                fitView\n                minZoom={0.1}\n"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one ReactFlow zoom insertion point, found {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm .github/workflows/temp-zoom-patch.yml
+
+      - name: Commit patch and cleanup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.tsx .github/workflows/temp-zoom-patch.yml
+          git commit -m "Allow further skill tree zoom out"
+          git push origin HEAD:zoom-out-further-20260909
