@@ -9,7 +9,6 @@ import './webMcpAppTools';
 import './statKeySync';
 import './statSearchSelect';
 import './chromeRuntime';
-import './performanceRuntime';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@xyflow/react/dist/style.css';
