@@ -102,3 +102,20 @@
   .canvas-display-toolbar { top: 12px; right: 12px; }
   .canvas-icon-toggle { width: 34px; height: 34px; }
 }
+
+/* At extreme zoom-out these details are below readable size but expensive to paint. */
+.flow-panel.is-low-detail-zoom .skill-node-label-effects,
+.flow-panel.is-low-detail-zoom .skill-node-label-currency {
+  display: none;
+}
+.flow-panel.is-minimal-detail-zoom .skill-node-label,
+.flow-panel.is-minimal-detail-zoom .skill-node-secondary-icon,
+.flow-panel.is-minimal-detail-zoom .skill-node::after {
+  display: none;
+}
+.flow-panel.is-minimal-detail-zoom .skill-node::before {
+  box-shadow: none;
+}
+.flow-panel .react-flow__viewport {
+  will-change: transform;
+}

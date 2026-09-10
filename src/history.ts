@@ -244,7 +244,7 @@ function appendChanges(changes: AtomicHistoryChange[], authorId?: string) {
   renderPanel();
 }
 
-function recordProject(raw: string) {
+function recordProject(raw: unknown) {
   const next = normalizeProject(raw);
   if (!next) return;
   latestEditorProject = cloneValue(next);
@@ -268,7 +268,14 @@ function recordProject(raw: string) {
 
 export function recordHistoryProject(project: unknown) {
   try {
-    recordProject(typeof project === 'string' ? project : JSON.stringify(project));
+    if (nodeDragActive && project && typeof project === 'object') {
+      // React Flow emits many immutable node arrays during a drag. Keep only the
+      // newest frame by reference and normalize/diff once after pointer-up.
+      pendingDragProject = project as CanonicalProject;
+      latestEditorProject = project as CanonicalProject;
+      return;
+    }
+    recordProject(project);
   } catch {
     // Ignore transient editor state that is not serializable.
   }
@@ -327,7 +334,7 @@ function flushPendingDragProject() {
   if (nodeDragActive || !pendingDragProject) return;
   const project = pendingDragProject;
   pendingDragProject = null;
-  recordProject(JSON.stringify(project));
+  recordProject(project);
 }
 
 function finishNodeDrag() {
