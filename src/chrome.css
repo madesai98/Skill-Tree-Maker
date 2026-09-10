@@ -335,6 +335,11 @@ body.app-chrome-ready .top-actions > .history-control > .history-button {
   display: none !important;
 }
 
+body.app-chrome-ready.app-modal-visible .topbar {
+  z-index: auto;
+  backdrop-filter: none;
+}
+
 body.app-chrome-ready .webmcp-panel,
 body.app-chrome-ready .project-manager-panel,
 body.app-chrome-ready .history-panel {
