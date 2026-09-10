@@ -958,6 +958,10 @@ function SkillTreeEditor() {
   const suppressContextMenuUntilRef = useRef(0);
   const clipboardRef = useRef<ClipboardSnapshot | null>(null);
   const pasteCountRef = useRef(0);
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
   const [draggedStatGroupId, setDraggedStatGroupId] = useState<string | null>(null);
   const [statGroupDropTarget, setStatGroupDropTarget] = useState<{ groupId: string; placement: 'before' | 'after' } | null>(null);
 
@@ -1150,7 +1154,7 @@ function SkillTreeEditor() {
   }), [stats]);
 
   const duplicateNode = useCallback((nodeId: string) => {
-    const sourceNode = nodes.find((node) => node.id === nodeId);
+    const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
     if (!sourceNode) return;
 
     const duplicateId = uid('skill');
@@ -1161,7 +1165,7 @@ function SkillTreeEditor() {
       data: cloneNodeData(sourceNode.data),
       selected: true,
     };
-    const parentEdges = edges.filter((edge) => edge.target === nodeId);
+    const parentEdges = edgesRef.current.filter((edge) => edge.target === nodeId);
 
     setNodes((current) => [
       ...current.map((node) => ({ ...node, selected: false })),
@@ -1179,7 +1183,7 @@ function SkillTreeEditor() {
     setSelectedNodeId(duplicateId);
     setActiveView('tree');
     showNotice(parentEdges.length ? 'Node duplicated with the same parent links.' : 'Root node duplicated.');
-  }, [cloneNodeData, edges, nodes, setEdges, setNodes, showNotice]);
+  }, [cloneNodeData, setEdges, setNodes, showNotice]);
 
   const beginRightPan = useCallback((event: ReactPointerEvent<HTMLDivElement>, clickAction?: () => void) => {
     if (!rfInstance) return;
@@ -1878,20 +1882,55 @@ function SkillTreeEditor() {
   const selectedCurrencyIcon = selectedCurrency?.iconId ? iconMap.get(selectedCurrency.iconId) ?? null : null;
   const selectedCurrencyColor = selectedCurrency ? normalizeColor(selectedCurrency.color, '#ffffff') : '#ffffff';
 
+  const nodeVisualCacheRef = useRef<{
+    staticInputs: readonly unknown[];
+    fingerprints: ReadonlyMap<string, string>;
+    visuals: ReadonlyMap<string, SkillNodeVisual>;
+  } | null>(null);
   const nodeVisuals = useMemo<ReadonlyMap<string, SkillNodeVisual>>(() => {
+    const previous = nodeVisualCacheRef.current;
+    const staticInputs = [currencies, iconIds, iconMap, statMap] as const;
+    const staticChanged = !previous
+      || previous.staticInputs.length !== staticInputs.length
+      || previous.staticInputs.some((value, index) => value !== staticInputs[index]);
     const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
-    return new Map(nodes.map((node) => {
+    const fingerprints = new Map<string, string>();
+    const visuals = new Map<string, SkillNodeVisual>();
+    let changed = staticChanged || previous?.fingerprints.size !== nodes.length;
+
+    for (const node of nodes) {
+      const fingerprint = [
+        node.data.primaryIconId ?? '',
+        node.data.secondaryIconId ?? '',
+        node.data.secondaryColor ?? '',
+        node.data.cost.currencyId,
+        node.data.upgrades[0]?.statId ?? '',
+      ].join('\u0001');
+      fingerprints.set(node.id, fingerprint);
+      const previousVisual = !staticChanged && previous?.fingerprints.get(node.id) === fingerprint
+        ? previous.visuals.get(node.id)
+        : undefined;
+      if (previousVisual) {
+        visuals.set(node.id, previousVisual);
+        continue;
+      }
+
+      changed = true;
       const appearance = resolveSkillAppearance(node.data, statMap, iconIds);
       const currency = currencyMap.get(node.data.cost.currencyId);
       const currencyIcon = currency?.iconId ? iconMap.get(currency.iconId) ?? null : null;
-      return [node.id, {
+      visuals.set(node.id, {
         ...appearance,
         primaryIcon: appearance.primaryIconId ? iconMap.get(appearance.primaryIconId) ?? null : null,
         secondaryIcon: appearance.secondaryIconId ? iconMap.get(appearance.secondaryIconId) ?? null : null,
         currencyIcon,
         currencyColor: currency ? normalizeColor(currency.color, '#ffffff') : '#ffffff',
-      }];
-    }));
+      });
+    }
+
+    if (!changed && previous) return previous.visuals;
+    nodeVisualCacheRef.current = { staticInputs, fingerprints, visuals };
+    return visuals;
   }, [currencies, iconIds, iconMap, nodes, statMap]);
 
   const selectedVisual = selectedNodeId ? nodeVisuals.get(selectedNodeId) ?? null : null;
@@ -1925,19 +1964,35 @@ effects: node.data.upgrades.flatMap((upgrade) => {
   }, [currencies, edges, iconIds, labelLayoutNodes, showNodeCurrency, showNodeNames, showNodeStats, statMap]);
 
 
+  const renderedEdgesCacheRef = useRef<{ sourceEdges: SkillLinkEdge[]; rendered: SkillLinkEdge[] } | null>(null);
   const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
+    const previous = renderedEdgesCacheRef.current;
+    const sameEdgeList = previous?.sourceEdges === edges;
     const nodeMap = new Map<string, SkillFlowNode>(nodes.map((node): [string, SkillFlowNode] => [node.id, node]));
-    return edges.flatMap((edge) => {
+    let changed = !sameEdgeList || previous?.rendered.length !== edges.length;
+    const rendered = edges.flatMap((edge, index) => {
       const source = nodeMap.get(edge.source);
       const target = nodeMap.get(edge.target);
-      if (!source || !target) return [];
+      if (!source || !target) {
+        changed = true;
+        return [];
+      }
+      const sourceCenter = { x: source.position.x + NODE_SIZE / 2, y: source.position.y + NODE_SIZE / 2 };
+      const targetCenter = { x: target.position.x + NODE_SIZE / 2, y: target.position.y + NODE_SIZE / 2 };
+      const previousEdge = sameEdgeList ? previous?.rendered[index] : undefined;
+      if (previousEdge?.id === edge.id
+        && previousEdge.data?.sourceCenter.x === sourceCenter.x
+        && previousEdge.data.sourceCenter.y === sourceCenter.y
+        && previousEdge.data?.targetCenter.x === targetCenter.x
+        && previousEdge.data.targetCenter.y === targetCenter.y) {
+        return [previousEdge];
+      }
+
+      changed = true;
       return [{
         ...edge,
         type: 'skillLink' as const,
-        data: {
-          sourceCenter: { x: source.position.x + NODE_SIZE / 2, y: source.position.y + NODE_SIZE / 2 },
-          targetCenter: { x: target.position.x + NODE_SIZE / 2, y: target.position.y + NODE_SIZE / 2 },
-        },
+        data: { sourceCenter, targetCenter },
         markerEnd: {
           type: MarkerType.ArrowClosed,
           width: 17,
@@ -1947,6 +2002,10 @@ effects: node.data.upgrades.flatMap((upgrade) => {
         style: { strokeWidth: 2 },
       }];
     });
+
+    if (!changed && previous) return previous.rendered;
+    renderedEdgesCacheRef.current = { sourceEdges: edges, rendered };
+    return rendered;
   }, [edges, nodes]);
 
 
@@ -2020,6 +2079,16 @@ effects: node.data.upgrades.flatMap((upgrade) => {
     : gesture?.kind === 'createUpgrade'
       ? 'Create upgrade copy'
       : 'Create blank child';
+
+  const skillInteractionValue = useMemo<SkillInteractionContextValue>(() => ({
+    beginGesture,
+    duplicateNode,
+    beginRightPan,
+    nodeLabels,
+    nodeVisuals,
+    playtestNodeStates: isPlaytest ? playtestNodeStates : EMPTY_PLAYTEST_NODE_STATES,
+    lockPlaytestNode,
+  }), [beginGesture, beginRightPan, duplicateNode, isPlaytest, lockPlaytestNode, nodeLabels, nodeVisuals, playtestNodeStates]);
 
   return (
     <main className="app-shell">
@@ -2151,15 +2220,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
               </svg>
             )}
 
-            <SkillInteractionContext.Provider value={{
-              beginGesture,
-              duplicateNode,
-              beginRightPan,
-              nodeLabels,
-              nodeVisuals,
-              playtestNodeStates: isPlaytest ? playtestNodeStates : EMPTY_PLAYTEST_NODE_STATES,
-              lockPlaytestNode,
-            }}>
+            <SkillInteractionContext.Provider value={skillInteractionValue}>
               <ReactFlow<SkillFlowNode, SkillLinkEdge>
                 nodes={isPlaytest ? playtestNodes : nodes}
                 edges={renderedEdges}
