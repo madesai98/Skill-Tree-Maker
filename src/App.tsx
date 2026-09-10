@@ -968,11 +968,17 @@ function SkillTreeEditor() {
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const isPlaytest = activeView === 'playtest';
   const [labelLayoutNodes, setLabelLayoutNodes] = useState(nodes);
+  const [isNodeDragging, setIsNodeDragging] = useState(false);
 
   useEffect(() => {
+    // Keep label placement frozen for the entire drag. React Flow updates node
+    // positions on every pointer move; solving here would put graph-wide layout
+    // work back into that hot path. Once dragging ends, the final node state
+    // triggers exactly one debounced layout pass.
+    if (isNodeDragging) return;
     const timer = window.setTimeout(() => setLabelLayoutNodes(nodes), 90);
     return () => window.clearTimeout(timer);
-  }, [nodes]);
+  }, [isNodeDragging, nodes]);
   const statGroups = useMemo(() => {
     const groups = new Map<string, StatGroupView>();
     stats.forEach((stat) => {
@@ -1006,6 +1012,16 @@ function SkillTreeEditor() {
     setNotice(message);
     if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = window.setTimeout(() => setNotice(null), 2200);
+  }, []);
+
+  const syncCanvasZoomDetail = useCallback((zoom: number) => {
+    const panel = flowWrapRef.current;
+    if (!panel) return;
+    // This used to be driven by a MutationObserver on the viewport transform,
+    // which meant every pan frame parsed the transform and touched DOM classes.
+    // Updating only when a viewport gesture ends keeps panning transform-only.
+    panel.classList.toggle('is-low-detail-zoom', zoom < 0.2);
+    panel.classList.toggle('is-minimal-detail-zoom', zoom < 0.1);
   }, []);
 
   useEffect(() => {
@@ -1080,12 +1096,13 @@ function SkillTreeEditor() {
   }, [setEdges, setNodes]);
 
   useEffect(() => {
+    if (!isPlaytest) return;
     const nodeIds = new Set(nodes.map((node) => node.id));
     setUnlockedNodeIds((current) => {
       const next = new Set([...current].filter((id) => nodeIds.has(id)));
       return next.size === current.size ? current : next;
     });
-  }, [nodes]);
+  }, [isPlaytest, nodes]);
 
   useEffect(() => {
     const project: PersistedProject = { version: 2, nodes, edges, stats, currencies, icons, perks, perkGridSize };
@@ -2228,7 +2245,15 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                 edgeTypes={edgeTypes}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
-                onInit={setRfInstance}
+                onInit={(instance) => {
+                  setRfInstance(instance);
+                  syncCanvasZoomDetail(instance.getViewport().zoom);
+                }}
+                onMoveEnd={(_, viewport) => syncCanvasZoomDetail(viewport.zoom)}
+                onNodeDragStart={() => setIsNodeDragging(true)}
+                onNodeDragStop={() => setIsNodeDragging(false)}
+                onSelectionDragStart={() => setIsNodeDragging(true)}
+                onSelectionDragStop={() => setIsNodeDragging(false)}
                 onNodeClick={(_, node) => isPlaytest ? unlockPlaytestNode(node.id) : setSelectedNodeId(node.id)}
                 onPaneClick={() => { if (!isPlaytest) setSelectedNodeId(null); }}
                 onPaneContextMenu={(event) => event.preventDefault()}
