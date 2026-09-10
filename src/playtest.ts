@@ -14,41 +14,42 @@ export type PlaytestUpgrade = {
 
 export type PlaytestNode = {
   id: string;
-  data: {
-    upgrades: PlaytestUpgrade[];
-  };
+  data: { upgrades: PlaytestUpgrade[] };
 };
 
-export type PlaytestEdge = {
-  source: string;
-  target: string;
-};
+export type PlaytestEdge = { source: string; target: string };
 
-export function canUnlockPlaytestNode(
-  nodeId: string,
-  unlockedNodeIds: ReadonlySet<string>,
-  edges: readonly PlaytestEdge[],
-) {
+const incomingEdgeCache = new WeakMap<readonly PlaytestEdge[], ReadonlyMap<string, readonly string[]>>();
+const outgoingEdgeCache = new WeakMap<readonly PlaytestEdge[], ReadonlyMap<string, readonly string[]>>();
+
+function endpointIndex(edges: readonly PlaytestEdge[], direction: 'incoming' | 'outgoing') {
+  const cache = direction === 'incoming' ? incomingEdgeCache : outgoingEdgeCache;
+  const cached = cache.get(edges);
+  if (cached) return cached;
+  const index = new Map<string, string[]>();
+  for (const edge of edges) {
+    const key = direction === 'incoming' ? edge.target : edge.source;
+    const value = direction === 'incoming' ? edge.source : edge.target;
+    const list = index.get(key);
+    if (list) list.push(value);
+    else index.set(key, [value]);
+  }
+  cache.set(edges, index);
+  return index;
+}
+
+export function canUnlockPlaytestNode(nodeId: string, unlockedNodeIds: ReadonlySet<string>, edges: readonly PlaytestEdge[]) {
   if (unlockedNodeIds.has(nodeId)) return false;
-  return edges.every((edge) => edge.target !== nodeId || unlockedNodeIds.has(edge.source));
+  return (endpointIndex(edges, 'incoming').get(nodeId) ?? []).every((source) => unlockedNodeIds.has(source));
 }
 
-export function canLockPlaytestNode(
-  nodeId: string,
-  unlockedNodeIds: ReadonlySet<string>,
-  edges: readonly PlaytestEdge[],
-) {
+export function canLockPlaytestNode(nodeId: string, unlockedNodeIds: ReadonlySet<string>, edges: readonly PlaytestEdge[]) {
   if (!unlockedNodeIds.has(nodeId)) return false;
-  return !edges.some((edge) => edge.source === nodeId && unlockedNodeIds.has(edge.target));
+  return !(endpointIndex(edges, 'outgoing').get(nodeId) ?? []).some((target) => unlockedNodeIds.has(target));
 }
 
-export function simulateStatValues(
-  stats: readonly PlaytestStat[],
-  nodes: readonly PlaytestNode[],
-  unlockedNodeIds: ReadonlySet<string>,
-) {
+export function simulateStatValues(stats: readonly PlaytestStat[], nodes: readonly PlaytestNode[], unlockedNodeIds: ReadonlySet<string>) {
   const effectsByStat = new Map<string, PlaytestUpgrade[]>();
-
   nodes.forEach((node) => {
     if (!unlockedNodeIds.has(node.id)) return;
     node.data.upgrades.forEach((upgrade) => {
@@ -60,17 +61,14 @@ export function simulateStatValues(
 
   return new Map<string, number | boolean>(stats.map((stat) => {
     const effects = effectsByStat.get(stat.id) ?? [];
-
     if (stat.type === 'boolean') {
       const setEffect = effects.find((effect) => effect.operator === 'set');
       return [stat.id, setEffect ? Boolean(setEffect.value) : Boolean(stat.baseValue)];
     }
-
     let flatAdditions = 0;
     let flatSubtractions = 0;
     let multiplierDelta = 0;
     let divisorDelta = 0;
-
     effects.forEach((effect) => {
       const value = Number(effect.value);
       if (!Number.isFinite(value)) return;
@@ -79,10 +77,7 @@ export function simulateStatValues(
       else if (effect.operator === 'multiply') multiplierDelta += value - 1;
       else if (effect.operator === 'divide') divisorDelta += value - 1;
     });
-
-    const base = typeof stat.baseValue === 'number' && Number.isFinite(stat.baseValue)
-      ? stat.baseValue
-      : 0;
+    const base = typeof stat.baseValue === 'number' && Number.isFinite(stat.baseValue) ? stat.baseValue : 0;
     const numerator = (base + flatAdditions - flatSubtractions) * (1 + multiplierDelta);
     const denominator = 1 + divisorDelta;
     return [stat.id, numerator / denominator];

@@ -37,6 +37,7 @@ import { IconifySearch, IconPicker, SvgAssetPreview, iconNameFromFile, sanitizeS
 import { canLockPlaytestNode, canUnlockPlaytestNode, simulateStatValues } from './playtest';
 import PerksView from './PerksView';
 import { recommendUpgradeStat } from './statUpgradeRecommendation';
+import { buildPrerequisiteIssueChecker } from './graphIndex';
 
 type StatType = 'number' | 'boolean';
 type NumberOperator = 'add' | 'subtract' | 'multiply' | 'divide';
@@ -962,6 +963,12 @@ function SkillTreeEditor() {
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const isPlaytest = activeView === 'playtest';
+  const [labelLayoutNodes, setLabelLayoutNodes] = useState(nodes);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLabelLayoutNodes(nodes), 90);
+    return () => window.clearTimeout(timer);
+  }, [nodes]);
   const statGroups = useMemo(() => {
     const groups = new Map<string, StatGroupView>();
     stats.forEach((stat) => {
@@ -1860,6 +1867,10 @@ function SkillTreeEditor() {
   };
 
   const incomingEdges = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId) : [];
+  const prerequisiteIssueForSource = useMemo(
+    () => buildPrerequisiteIssueChecker(selectedNodeId, edges),
+    [edges, selectedNodeId],
+  );
   const selectedCurrency = currencies.find((currency) => currency.id === selectedNode?.data.cost.currencyId);
   const iconMap = useMemo(() => new Map(icons.map((icon) => [icon.id, icon])), [icons]);
   const statMap = useMemo(() => new Map(stats.map((stat) => [stat.id, stat])), [stats]);
@@ -1889,7 +1900,7 @@ function SkillTreeEditor() {
   const nodeLabels = useMemo(() => {
     const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
     return buildNodeLabelLayout(
-      nodes.map((node) => {
+      labelLayoutNodes.map((node) => {
         const currency = currencyMap.get(node.data.cost.currencyId);
         return {
 id: node.id,
@@ -1911,7 +1922,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
       edges,
       { showCurrency: showNodeCurrency, showNames: showNodeNames, showStats: showNodeStats },
     );
-  }, [currencies, edges, iconIds, nodes, showNodeCurrency, showNodeNames, showNodeStats, statMap]);
+  }, [currencies, edges, iconIds, labelLayoutNodes, showNodeCurrency, showNodeNames, showNodeStats, statMap]);
 
 
   const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
@@ -1939,29 +1950,35 @@ effects: node.data.upgrades.flatMap((upgrade) => {
   }, [edges, nodes]);
 
 
-  const playtestNodes = useMemo<SkillFlowNode[]>(() => nodes.map((node) => ({
-    ...node,
-    selected: false,
-    draggable: false,
-    selectable: false,
-  })), [nodes]);
+  const playtestNodes = useMemo<SkillFlowNode[]>(() => {
+    if (!isPlaytest) return nodes;
+    return nodes.map((node) => ({
+      ...node,
+      selected: false,
+      draggable: false,
+      selectable: false,
+    }));
+  }, [isPlaytest, nodes]);
 
-  const playtestNodeStates = useMemo<ReadonlyMap<string, PlaytestNodeState>>(() =>
-    new Map(nodes.map((node) => [
+  const playtestNodeStates = useMemo<ReadonlyMap<string, PlaytestNodeState>>(() => {
+    if (!isPlaytest) return EMPTY_PLAYTEST_NODE_STATES;
+    return new Map(nodes.map((node) => [
       node.id,
       unlockedNodeIds.has(node.id)
         ? 'unlocked'
         : canUnlockPlaytestNode(node.id, unlockedNodeIds, edges)
           ? 'available'
           : 'locked',
-    ] as const)),
-  [edges, nodes, unlockedNodeIds]);
+    ] as const));
+  }, [edges, isPlaytest, nodes, unlockedNodeIds]);
 
-  const simulatedStats = useMemo(() =>
-    simulateStatValues(stats, nodes, unlockedNodeIds),
-  [nodes, stats, unlockedNodeIds]);
+  const simulatedStats = useMemo(() => {
+    if (!isPlaytest) return new Map<string, number | boolean>();
+    return simulateStatValues(stats, nodes, unlockedNodeIds);
+  }, [isPlaytest, nodes, stats, unlockedNodeIds]);
 
   const playtestCurrencyTotals = useMemo(() => {
+    if (!isPlaytest) return new Map<string, number>();
     const totals = new Map<string, number>(currencies.map((currency) => [currency.id, 0]));
     nodes.forEach((node) => {
       if (!unlockedNodeIds.has(node.id)) return;
@@ -1970,7 +1987,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
       totals.set(currencyId, (totals.get(currencyId) ?? 0) + amount);
     });
     return totals;
-  }, [currencies, nodes, unlockedNodeIds]);
+  }, [currencies, isPlaytest, nodes, unlockedNodeIds]);
 
   const unlockPlaytestNode = useCallback((nodeId: string) => {
     if (unlockedNodeIds.has(nodeId)) return;
@@ -2363,7 +2380,7 @@ effects: node.data.upgrades.flatMap((upgrade) => {
                     <select value={connectionChoice} onChange={(e) => setConnectionChoice(e.target.value)}>
                       <option value="">Choose a skill…</option>
                       {nodes.filter((node) => node.id !== selectedNode.id).map((node) => {
-                        const issue = edgeIssue(node.id, selectedNode.id, edges);
+                        const issue = prerequisiteIssueForSource(node.id);
                         return <option key={node.id} value={node.id} disabled={Boolean(issue)}>{node.data.name}{issue ? ' — unavailable' : ''}</option>;
                       })}
                     </select>

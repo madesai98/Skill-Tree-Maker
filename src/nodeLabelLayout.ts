@@ -39,6 +39,7 @@ type Direction = {
   bias: number;
   align: NodeLabelView['align'];
 };
+type SpatialIndex<T> = Map<string, T[]>;
 
 const NODE_SIZE = 62;
 const NODE_RADIUS = 29;
@@ -46,6 +47,7 @@ const LABEL_GAP = 12;
 const NODE_CLEARANCE = 5;
 const EDGE_CLEARANCE = 4;
 const LABEL_CLEARANCE = 5;
+const SPATIAL_CELL = 192;
 
 const DIRECTIONS: Direction[] = [
   { x: 1, y: 0, bias: 0, align: 'left' },
@@ -60,9 +62,7 @@ const DIRECTIONS: Direction[] = [
 
 function formatNumber(value: number) {
   if (!Number.isFinite(value)) return '0';
-  if (Math.abs(value) >= 1e6 || (Math.abs(value) > 0 && Math.abs(value) < 1e-4)) {
-    return value.toPrecision(4);
-  }
+  if (Math.abs(value) >= 1e6 || (Math.abs(value) > 0 && Math.abs(value) < 1e-4)) return value.toPrecision(4);
   return Number(value.toFixed(6)).toString();
 }
 
@@ -75,13 +75,10 @@ function statTarget(groupName: string, statName: string) {
   const stat = statName.trim();
   if (!group) return stat;
   if (!stat) return group;
-
   const lowerGroup = group.toLocaleLowerCase();
   const lowerStat = stat.toLocaleLowerCase();
   if (lowerStat === lowerGroup) return stat;
-  if (lowerStat.startsWith(`${lowerGroup} `)) {
-    return `${group} ${stat.slice(group.length).trim()}`;
-  }
+  if (lowerStat.startsWith(`${lowerGroup} `)) return `${group} ${stat.slice(group.length).trim()}`;
   return `${group} ${stat}`;
 }
 
@@ -89,24 +86,20 @@ function formatEffect(effect: NodeLabelEffectInput): NodeLabelEffectView {
   const target = statTarget(effect.groupName, effect.statName);
   let modifier: string;
   let tone: NodeLabelEffectView['tone'] = 'neutral';
-
   if (effect.operator === 'set') {
     const enabled = Boolean(effect.value);
     modifier = enabled ? '✓' : '✕';
     tone = enabled ? 'positive' : 'negative';
   } else {
     const rawValue = typeof effect.value === 'number' ? effect.value : 0;
-    if (effect.operator === 'multiply') {
-      modifier = `×${formatNumber(rawValue)}`;
-    } else if (effect.operator === 'divide') {
-      modifier = `÷${formatNumber(rawValue)}`;
-    } else {
+    if (effect.operator === 'multiply') modifier = `×${formatNumber(rawValue)}`;
+    else if (effect.operator === 'divide') modifier = `÷${formatNumber(rawValue)}`;
+    else {
       const signedValue = effect.operator === 'subtract' ? -rawValue : rawValue;
       modifier = `${signedValue >= 0 ? '+' : '−'}${formatNumber(Math.abs(signedValue))}`;
       tone = signedValue >= 0 ? 'positive' : 'negative';
     }
   }
-
   return { modifier, target, text: `${modifier} ${target}`.trim(), tone };
 }
 
@@ -138,12 +131,7 @@ function estimateLabelSize(currency: NodeLabelView['currency'], name: string | n
 }
 
 function expandRect(rect: Rect, amount: number): Rect {
-  return {
-    left: rect.left - amount,
-    top: rect.top - amount,
-    right: rect.right + amount,
-    bottom: rect.bottom + amount,
-  };
+  return { left: rect.left - amount, top: rect.top - amount, right: rect.right + amount, bottom: rect.bottom + amount };
 }
 
 function rectsOverlap(a: Rect, b: Rect) {
@@ -197,6 +185,73 @@ function segmentIntersectsRect(a: Point, b: Point, rect: Rect) {
     || segmentsIntersect(a, b, bottomLeft, topLeft);
 }
 
+function spatialKey(x: number, y: number) {
+  return `${x}:${y}`;
+}
+
+function cellRange(rect: Rect) {
+  return {
+    minX: Math.floor(rect.left / SPATIAL_CELL),
+    maxX: Math.floor(rect.right / SPATIAL_CELL),
+    minY: Math.floor(rect.top / SPATIAL_CELL),
+    maxY: Math.floor(rect.bottom / SPATIAL_CELL),
+  };
+}
+
+function addToSpatialIndex<T>(index: SpatialIndex<T>, rect: Rect, value: T) {
+  const range = cellRange(rect);
+  for (let x = range.minX; x <= range.maxX; x += 1) {
+    for (let y = range.minY; y <= range.maxY; y += 1) {
+      const key = spatialKey(x, y);
+      const bucket = index.get(key);
+      if (bucket) bucket.push(value);
+      else index.set(key, [value]);
+    }
+  }
+}
+
+function addPointToSpatialIndex<T>(index: SpatialIndex<T>, point: Point, value: T) {
+  const key = spatialKey(Math.floor(point.x / SPATIAL_CELL), Math.floor(point.y / SPATIAL_CELL));
+  const bucket = index.get(key);
+  if (bucket) bucket.push(value);
+  else index.set(key, [value]);
+}
+
+function addSegmentToSpatialIndex<T>(index: SpatialIndex<T>, source: Point, target: Point, value: T) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / (SPATIAL_CELL / 2)));
+  const touched = new Set<string>();
+  for (let i = 0; i <= steps; i += 1) {
+    const x = source.x + dx * (i / steps);
+    const y = source.y + dy * (i / steps);
+    const cellX = Math.floor(x / SPATIAL_CELL);
+    const cellY = Math.floor(y / SPATIAL_CELL);
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        const key = spatialKey(cellX + offsetX, cellY + offsetY);
+        if (touched.has(key)) continue;
+        touched.add(key);
+        const bucket = index.get(key);
+        if (bucket) bucket.push(value);
+        else index.set(key, [value]);
+      }
+    }
+  }
+}
+
+function querySpatialIndex<T>(index: SpatialIndex<T>, rect: Rect) {
+  const range = cellRange(rect);
+  const result = new Set<T>();
+  for (let x = range.minX; x <= range.maxX; x += 1) {
+    for (let y = range.minY; y <= range.maxY; y += 1) {
+      const bucket = index.get(spatialKey(x, y));
+      if (bucket) bucket.forEach((value) => result.add(value));
+    }
+  }
+  return result;
+}
+
 function nodeCenter(node: NodeLabelInput): Point {
   return { x: node.position.x + NODE_SIZE / 2, y: node.position.y + NODE_SIZE / 2 };
 }
@@ -206,16 +261,8 @@ function candidateRect(center: Point, width: number, height: number, direction: 
   const halfHeight = height / 2;
   const rectangleRadiusAlongDirection = Math.abs(direction.x) * halfWidth + Math.abs(direction.y) * halfHeight;
   const distance = NODE_RADIUS + LABEL_GAP + rectangleRadiusAlongDirection;
-  const labelCenter = {
-    x: center.x + direction.x * distance,
-    y: center.y + direction.y * distance,
-  };
-  return {
-    left: labelCenter.x - halfWidth,
-    top: labelCenter.y - halfHeight,
-    right: labelCenter.x + halfWidth,
-    bottom: labelCenter.y + halfHeight,
-  };
+  const labelCenter = { x: center.x + direction.x * distance, y: center.y + direction.y * distance };
+  return { left: labelCenter.x - halfWidth, top: labelCenter.y - halfHeight, right: labelCenter.x + halfWidth, bottom: labelCenter.y + halfHeight };
 }
 
 export function buildNodeLabelLayout(
@@ -226,11 +273,17 @@ export function buildNodeLabelLayout(
   if (!options.showCurrency && !options.showNames && !options.showStats) return new Map();
 
   const centerMap = new Map(nodes.map((node) => [node.id, nodeCenter(node)]));
+  const nodeIndex: SpatialIndex<NodeLabelInput> = new Map();
+  for (const node of nodes) addPointToSpatialIndex(nodeIndex, centerMap.get(node.id)!, node);
+
   const edgeSegments = edges.flatMap((edge) => {
     const source = centerMap.get(edge.source);
     const target = centerMap.get(edge.target);
     return source && target ? [{ source, target }] : [];
   });
+  const edgeIndex: SpatialIndex<(typeof edgeSegments)[number]> = new Map();
+  for (const segment of edgeSegments) addSegmentToSpatialIndex(edgeIndex, segment.source, segment.target, segment);
+
   const degree = new Map<string, number>();
   for (const edge of edges) {
     degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
@@ -251,7 +304,7 @@ export function buildNodeLabelLayout(
   });
 
   const result = new Map<string, NodeLabelView>();
-  const placedRects: Rect[] = [];
+  const placedIndex: SpatialIndex<Rect> = new Map();
 
   for (const { node, currency, name, effects, width, height } of prepared) {
     const center = centerMap.get(node.id)!;
@@ -264,19 +317,22 @@ export function buildNodeLabelLayout(
       const edgeCollisionRect = expandRect(rect, EDGE_CLEARANCE);
       const labelCollisionRect = expandRect(rect, LABEL_CLEARANCE);
 
-      for (const otherNode of nodes) {
+      const nearbyNodes = querySpatialIndex(nodeIndex, expandRect(rect, NODE_RADIUS + 12));
+      for (const otherNode of nearbyNodes) {
         if (otherNode.id === node.id) continue;
         const otherCenter = centerMap.get(otherNode.id)!;
         if (rectCircleIntersects(nodeCollisionRect, otherCenter, NODE_RADIUS)) score += 1_000_000;
         else if (rectCircleIntersects(expandRect(rect, 12), otherCenter, NODE_RADIUS)) score += 300;
       }
 
-      for (const segment of edgeSegments) {
+      const nearbyEdges = querySpatialIndex(edgeIndex, expandRect(rect, 12));
+      for (const segment of nearbyEdges) {
         if (segmentIntersectsRect(segment.source, segment.target, edgeCollisionRect)) score += 100_000;
         else if (segmentIntersectsRect(segment.source, segment.target, expandRect(rect, 10))) score += 120;
       }
 
-      for (const placed of placedRects) {
+      const nearbyLabels = querySpatialIndex(placedIndex, expandRect(labelCollisionRect, LABEL_CLEARANCE));
+      for (const placed of nearbyLabels) {
         if (rectsOverlap(labelCollisionRect, expandRect(placed, LABEL_CLEARANCE))) score += 500_000;
       }
 
@@ -284,7 +340,7 @@ export function buildNodeLabelLayout(
     }
 
     if (!best) continue;
-    placedRects.push(best.rect);
+    addToSpatialIndex(placedIndex, expandRect(best.rect, LABEL_CLEARANCE), best.rect);
     result.set(node.id, {
       left: best.rect.left - node.position.x,
       top: best.rect.top - node.position.y,
