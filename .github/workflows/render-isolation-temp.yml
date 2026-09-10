@@ -1,0 +1,213 @@
+name: Apply render isolation patch
+run-name: Apply render isolation performance patch
+
+on:
+  push:
+    branches: [perf/skill-tree-render-isolation]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/skill-tree-render-isolation
+      - name: Apply render isolation optimizations
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/App.tsx')
+          text = p.read_text()
+
+          def swap(old, new):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one App.tsx match, got {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          swap(
+          "function MaskedSvgIcon({ icon, color, className }: { icon: IconAsset | null | undefined; color: string; className: string }) {\n  if (!icon) return null;\n  const url = `url(\\\"${svgDataUrl(icon.svg)}\\\")`;\n",
+          "const maskedSvgUrlCache = new Map<string, { svg: string; url: string }>();\n\nfunction maskedSvgUrl(icon: IconAsset) {\n  const cached = maskedSvgUrlCache.get(icon.id);\n  if (cached?.svg === icon.svg) return cached.url;\n  const url = svgDataUrl(icon.svg);\n  maskedSvgUrlCache.set(icon.id, { svg: icon.svg, url });\n  return url;\n}\n\nfunction MaskedSvgIcon({ icon, color, className }: { icon: IconAsset | null | undefined; color: string; className: string }) {\n  if (!icon) return null;\n  const url = `url(\\\"${maskedSvgUrl(icon)}\\\")`;\n")
+
+          swap(
+          "  const clipboardRef = useRef<ClipboardSnapshot | null>(null);\n  const pasteCountRef = useRef(0);\n",
+          "  const clipboardRef = useRef<ClipboardSnapshot | null>(null);\n  const pasteCountRef = useRef(0);\n  const nodesRef = useRef(nodes);\n  const edgesRef = useRef(edges);\n  nodesRef.current = nodes;\n  edgesRef.current = edges;\n")
+
+          swap(
+          "  const duplicateNode = useCallback((nodeId: string) => {\n    const sourceNode = nodes.find((node) => node.id === nodeId);\n",
+          "  const duplicateNode = useCallback((nodeId: string) => {\n    const sourceNode = nodesRef.current.find((node) => node.id === nodeId);\n")
+          swap(
+          "    const parentEdges = edges.filter((edge) => edge.target === nodeId);\n",
+          "    const parentEdges = edgesRef.current.filter((edge) => edge.target === nodeId);\n")
+          swap(
+          "  }, [cloneNodeData, edges, nodes, setEdges, setNodes, showNotice]);\n\n  const beginRightPan",
+          "  }, [cloneNodeData, setEdges, setNodes, showNotice]);\n\n  const beginRightPan")
+
+          old_visuals = '''  const nodeVisuals = useMemo<ReadonlyMap<string, SkillNodeVisual>>(() => {
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
+    return new Map(nodes.map((node) => {
+      const appearance = resolveSkillAppearance(node.data, statMap, iconIds);
+      const currency = currencyMap.get(node.data.cost.currencyId);
+      const currencyIcon = currency?.iconId ? iconMap.get(currency.iconId) ?? null : null;
+      return [node.id, {
+        ...appearance,
+        primaryIcon: appearance.primaryIconId ? iconMap.get(appearance.primaryIconId) ?? null : null,
+        secondaryIcon: appearance.secondaryIconId ? iconMap.get(appearance.secondaryIconId) ?? null : null,
+        currencyIcon,
+        currencyColor: currency ? normalizeColor(currency.color, '#ffffff') : '#ffffff',
+      }];
+    }));
+  }, [currencies, iconIds, iconMap, nodes, statMap]);
+'''
+          new_visuals = '''  const nodeVisualCacheRef = useRef<{
+    staticInputs: readonly unknown[];
+    fingerprints: ReadonlyMap<string, string>;
+    visuals: ReadonlyMap<string, SkillNodeVisual>;
+  } | null>(null);
+  const nodeVisuals = useMemo<ReadonlyMap<string, SkillNodeVisual>>(() => {
+    const previous = nodeVisualCacheRef.current;
+    const staticInputs = [currencies, iconIds, iconMap, statMap] as const;
+    const staticChanged = !previous
+      || previous.staticInputs.length !== staticInputs.length
+      || previous.staticInputs.some((value, index) => value !== staticInputs[index]);
+    const currencyMap = new Map(currencies.map((currency) => [currency.id, currency]));
+    const fingerprints = new Map<string, string>();
+    const visuals = new Map<string, SkillNodeVisual>();
+    let changed = staticChanged || previous?.fingerprints.size !== nodes.length;
+
+    for (const node of nodes) {
+      const fingerprint = [
+        node.data.primaryIconId ?? '',
+        node.data.secondaryIconId ?? '',
+        node.data.secondaryColor ?? '',
+        node.data.cost.currencyId,
+        node.data.upgrades[0]?.statId ?? '',
+      ].join('\\u0001');
+      fingerprints.set(node.id, fingerprint);
+      const previousVisual = !staticChanged && previous?.fingerprints.get(node.id) === fingerprint
+        ? previous.visuals.get(node.id)
+        : undefined;
+      if (previousVisual) {
+        visuals.set(node.id, previousVisual);
+        continue;
+      }
+
+      changed = true;
+      const appearance = resolveSkillAppearance(node.data, statMap, iconIds);
+      const currency = currencyMap.get(node.data.cost.currencyId);
+      const currencyIcon = currency?.iconId ? iconMap.get(currency.iconId) ?? null : null;
+      visuals.set(node.id, {
+        ...appearance,
+        primaryIcon: appearance.primaryIconId ? iconMap.get(appearance.primaryIconId) ?? null : null,
+        secondaryIcon: appearance.secondaryIconId ? iconMap.get(appearance.secondaryIconId) ?? null : null,
+        currencyIcon,
+        currencyColor: currency ? normalizeColor(currency.color, '#ffffff') : '#ffffff',
+      });
+    }
+
+    if (!changed && previous) return previous.visuals;
+    nodeVisualCacheRef.current = { staticInputs, fingerprints, visuals };
+    return visuals;
+  }, [currencies, iconIds, iconMap, nodes, statMap]);
+'''
+          swap(old_visuals, new_visuals)
+
+          old_edges = '''  const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
+    const nodeMap = new Map<string, SkillFlowNode>(nodes.map((node): [string, SkillFlowNode] => [node.id, node]));
+    return edges.flatMap((edge) => {
+      const source = nodeMap.get(edge.source);
+      const target = nodeMap.get(edge.target);
+      if (!source || !target) return [];
+      return [{
+        ...edge,
+        type: 'skillLink' as const,
+        data: {
+          sourceCenter: { x: source.position.x + NODE_SIZE / 2, y: source.position.y + NODE_SIZE / 2 },
+          targetCenter: { x: target.position.x + NODE_SIZE / 2, y: target.position.y + NODE_SIZE / 2 },
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 17,
+          height: 17,
+          color: '#5d6673',
+        },
+        style: { strokeWidth: 2 },
+      }];
+    });
+  }, [edges, nodes]);
+'''
+          new_edges = '''  const renderedEdgesCacheRef = useRef<{ sourceEdges: SkillLinkEdge[]; rendered: SkillLinkEdge[] } | null>(null);
+  const renderedEdges = useMemo<SkillLinkEdge[]>(() => {
+    const previous = renderedEdgesCacheRef.current;
+    const sameEdgeList = previous?.sourceEdges === edges;
+    const nodeMap = new Map<string, SkillFlowNode>(nodes.map((node): [string, SkillFlowNode] => [node.id, node]));
+    let changed = !sameEdgeList || previous?.rendered.length !== edges.length;
+    const rendered = edges.flatMap((edge, index) => {
+      const source = nodeMap.get(edge.source);
+      const target = nodeMap.get(edge.target);
+      if (!source || !target) {
+        changed = true;
+        return [];
+      }
+      const sourceCenter = { x: source.position.x + NODE_SIZE / 2, y: source.position.y + NODE_SIZE / 2 };
+      const targetCenter = { x: target.position.x + NODE_SIZE / 2, y: target.position.y + NODE_SIZE / 2 };
+      const previousEdge = sameEdgeList ? previous?.rendered[index] : undefined;
+      if (previousEdge?.id === edge.id
+        && previousEdge.data?.sourceCenter.x === sourceCenter.x
+        && previousEdge.data.sourceCenter.y === sourceCenter.y
+        && previousEdge.data?.targetCenter.x === targetCenter.x
+        && previousEdge.data.targetCenter.y === targetCenter.y) {
+        return [previousEdge];
+      }
+
+      changed = true;
+      return [{
+        ...edge,
+        type: 'skillLink' as const,
+        data: { sourceCenter, targetCenter },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 17,
+          height: 17,
+          color: '#5d6673',
+        },
+        style: { strokeWidth: 2 },
+      }];
+    });
+
+    if (!changed && previous) return previous.rendered;
+    renderedEdgesCacheRef.current = { sourceEdges: edges, rendered };
+    return rendered;
+  }, [edges, nodes]);
+'''
+          swap(old_edges, new_edges)
+
+          swap(
+          "  const gestureLabel = gesture?.kind === 'link'\n    ? 'Link prerequisite'\n    : gesture?.kind === 'createUpgrade'\n      ? 'Create upgrade copy'\n      : 'Create blank child';\n\n  return (\n",
+          "  const gestureLabel = gesture?.kind === 'link'\n    ? 'Link prerequisite'\n    : gesture?.kind === 'createUpgrade'\n      ? 'Create upgrade copy'\n      : 'Create blank child';\n\n  const skillInteractionValue = useMemo<SkillInteractionContextValue>(() => ({\n    beginGesture,\n    duplicateNode,\n    beginRightPan,\n    nodeLabels,\n    nodeVisuals,\n    playtestNodeStates: isPlaytest ? playtestNodeStates : EMPTY_PLAYTEST_NODE_STATES,\n    lockPlaytestNode,\n  }), [beginGesture, beginRightPan, duplicateNode, isPlaytest, lockPlaytestNode, nodeLabels, nodeVisuals, playtestNodeStates]);\n\n  return (\n")
+
+          swap(
+          "            <SkillInteractionContext.Provider value={{\n              beginGesture,\n              duplicateNode,\n              beginRightPan,\n              nodeLabels,\n              nodeVisuals,\n              playtestNodeStates: isPlaytest ? playtestNodeStates : EMPTY_PLAYTEST_NODE_STATES,\n              lockPlaytestNode,\n            }}>\n",
+          "            <SkillInteractionContext.Provider value={skillInteractionValue}>\n")
+
+          p.write_text(text)
+          PY
+      - name: Install dependencies
+        run: npm install
+      - name: Production build
+        run: npm run build
+      - name: Commit optimized source and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/render-isolation-temp.yml
+          git add src/App.tsx
+          git commit -m "Isolate graph renders during node edits"
+          git push origin HEAD:perf/skill-tree-render-isolation
